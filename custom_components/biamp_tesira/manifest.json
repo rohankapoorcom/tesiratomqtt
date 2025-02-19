@@ -1,0 +1,12 @@
+{
+  "domain": "biamp_tesira",
+  "name": "Biamp Tesira",
+  "codeowners": [
+    "@ludeeus"
+  ],
+  "config_flow": true,
+  "documentation": "https://github.com/ludeeus/biamp_tesira",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/ludeeus/biamp_tesira/issues",
+  "version": "0.1.0"
+}
