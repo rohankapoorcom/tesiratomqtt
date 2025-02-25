@@ -1,4 +1,4 @@
-FROM python:3.13-slim AS base
+FROM python:3.13-alpine AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
@@ -30,9 +30,6 @@ USER appuser
 
 # Copy the source code into the container.
 COPY src .
-
-# Expose the port that the application listens on.
-EXPOSE 8000
 
 # Run the application.
 ENTRYPOINT ["python", "__init__.py"]
