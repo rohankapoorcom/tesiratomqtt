@@ -5,14 +5,10 @@ __pycache__
 */build/*
 */dist/*
 
+config.yaml
 
 # misc
 .coverage
 .vscode
 coverage.xml
 .ruff_cache
-
-
-# Home Assistant configuration
-config/*
-!config/configuration.yaml
