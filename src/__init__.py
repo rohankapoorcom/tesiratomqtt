@@ -84,7 +84,7 @@ async def listen_to_incoming_mqtt_messages(
     _LOGGER.info("Starting MQTT subscription reading loop")
     await barrier.wait()
     async for message in mqtt_client.messages:
-        decoded_payload: str = message.payload.decode()  # type: ignore  # noqa: PGH003
+        decoded_payload: str = message.payload.decode("ASCII")  # type: ignore  # noqa: PGH003
         _LOGGER.debug("%s - Received MQTT message: %s", message.topic, decoded_payload)
         key = message.topic.value.split("/")[1]
         await tesira_connection.update_state_and_command(key, decoded_payload)
