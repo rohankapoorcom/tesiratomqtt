@@ -62,7 +62,7 @@ class MqttConnection:
             )
             self._published_names.add(identifier)
 
-    async def publish_discovery(
+    async def publish_discovery(  # noqa: PLR0913
         self,
         name: str,
         data: dict,

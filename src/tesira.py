@@ -106,9 +106,10 @@ class BiampTesiraConnection:
         identifier = (
             f"{subscription.instance_tag}_{subscription.attribute}_{subscription.index}"
         )
+        command = f"{subscription.instance_tag} subscribe {subscription.attribute} {subscription.index} {identifier}"  # noqa: E501
         first_response = (
             await self._write(
-                f"{subscription.instance_tag} subscribe {subscription.attribute} {subscription.index} {identifier}",
+                command,
                 self._subscription_telnet,
             )
         ).strip()
@@ -155,6 +156,7 @@ class BiampTesiraConnection:
                 case _:
                     variable_type = "str"
 
+            unique_id = f"{self._serial_number}_{subscription.instance_tag}_{subscription.attribute}_{subscription.index}"  # noqa: E501
             data = {
                 "instance_tag": subscription.instance_tag,
                 "attribute": subscription.attribute,
@@ -162,7 +164,7 @@ class BiampTesiraConnection:
                 "state": TypeAdapter(variable_type).validate_python(original_value),
                 "variable_type": variable_type,
                 "device_id": f"{self._serial_number}_{subscription.instance_tag}",
-                "unique_id": f"{self._serial_number}_{subscription.instance_tag}_{subscription.attribute}_{subscription.index}",
+                "unique_id": unique_id,
                 "name": subscription.name,
                 "device_name": subscription.device_name,
                 "identifier": identifier,
@@ -229,13 +231,14 @@ class BiampTesiraConnection:
 
         return {"min_level": min_level, "max_level": max_level}
 
-    async def update_state_and_command(self, key: str, value: str):
+    async def update_state_and_command(self, key: str, value: str) -> None:
+        """Update the state on the Tesira DSP for the specified key to the value."""
         if not self._subscriptions.get(key):
             msg = f"Key: {key} does not match any subscriptions"
             raise ClientError(msg)
 
         await self.command(
-            f"{self._subscriptions[key]['instance_tag']} set {self._subscriptions[key]['attribute']} {self._subscriptions[key]['index']} {value}"
+            f"{self._subscriptions[key]['instance_tag']} set {self._subscriptions[key]['attribute']} {self._subscriptions[key]['index']} {value}"  # noqa: E501
         )
 
     async def command(self, command: str) -> str | None:
@@ -250,7 +253,7 @@ class BiampTesiraConnection:
             return response[13:-1]
         return response
 
-    async def listen_to_incoming_messages(self, barrier) -> None:
+    async def listen_to_incoming_messages(self, barrier: asyncio.Barrier) -> None:
         """Receive incoming messages from the Tesira and process."""
         if self._subscription_telnet is None or self._subscription_telnet.closed:
             msg = "Client not connected."
