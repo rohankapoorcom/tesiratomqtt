@@ -78,14 +78,14 @@ class BiampTesiraTelnetConnection:
         # Read the response, with optional timeout
         try:
             data = await asyncio.wait_for(
-                self.reader.readuntil(separator.encode("ASCII")), timeout_time
+                self.reader.readuntil(separator.encode("utf-8")), timeout_time
             )
         except TimeoutError as err:
             raise ClientTimeoutError from err
         except (OSError, asyncio.IncompleteReadError) as err:
             raise ClientConnectionError from err
 
-        return data.replace(b"\x00", b"").decode("ASCII")
+        return data.replace(b"\x00", b"").decode("utf-8")
 
     async def readline(self, timeout_time: float | None = None) -> str:
         """
