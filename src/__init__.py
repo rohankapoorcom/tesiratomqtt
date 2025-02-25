@@ -11,6 +11,7 @@ from pathlib import Path
 import aiomqtt
 import yaml
 
+from _version import __version__
 from models import Config, Subscription, TesiraConfig
 from mqtt_connection import AVAILABILITY_TOPIC, MqttConnection
 from tesira import BiampTesiraConnection
@@ -156,5 +157,6 @@ if __name__ == "__main__":
         format="%(asctime)s - %(levelname)s - %(message)s",
         force=True,
     )
+    _LOGGER.info("Tesira2MQTT version %s", __version__)
     config = load_config(args.config)
     asyncio.run(async_main())
