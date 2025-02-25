@@ -53,6 +53,7 @@ async def establish_tesira_connection(
 async def handle_exit(
     mqtt: MqttConnection, tesira: BiampTesiraConnection, tasks: list[asyncio.Task]
 ) -> None:
+    """Gracefully exit by cancelling all long-running tasks."""
     _LOGGER.info("Exiting gracefully")
     await mqtt.publish_status("offline")
     for task in tasks:
@@ -63,13 +64,17 @@ async def handle_exit(
 async def listen_to_incoming_mqtt_messages(
     mqtt_client: aiomqtt.Client, tesira_connection: BiampTesiraConnection
 ) -> None:
+    """Infinitely process incoming MQTT messages."""
     _LOGGER.debug("Starting MQTT subscription reading loop")
     async for message in mqtt_client.messages:
+        decoded_payload: str = message.payload.decode()  # type: ignore  # noqa: PGH003
+        _LOGGER.debug("%s - Received MQTT message: %s", message.topic, decoded_payload)
         key = message.topic.value.split("/")[1]
-        await tesira_connection.update_state_and_command(key, message.payload.decode())
+        await tesira_connection.update_state_and_command(key, decoded_payload)
 
 
 async def async_main() -> None:
+    """Run Tesira2MQTT."""
     mqtt_client = aiomqtt.Client(
         hostname=config.mqtt.server,
         port=config.mqtt.port,
@@ -99,6 +104,14 @@ async def async_main() -> None:
             tasks.append(
                 tg.create_task(
                     listen_to_incoming_mqtt_messages(mqtt_client, tesira_connection)
+                )
+            )
+
+            tasks.append(
+                tg.create_task(
+                    tesira_connection.automatically_subscribe_on_schedule(
+                        config.subscriptions
+                    )
                 )
             )
 

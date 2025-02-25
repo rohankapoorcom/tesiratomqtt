@@ -19,6 +19,7 @@ class MqttConfig(BaseModel):
 class TesiraConfig(BaseModel):
     host: str
     port: int
+    resubscription_time: int
 
 
 class Subscription(BaseModel):

@@ -107,19 +107,38 @@ class BiampTesiraConnection:
             )
         ).strip()
 
+        if "-ERR ALREADY_SUBSCRIBED" in first_response:
+            return
+
         if "-ERR" in first_response:
             raise ClientResponseError(first_response)
+
+        if identifier in self._subscriptions:
+            while first_response.startswith('! "publishToken":'):
+                await self.process_tesira_response(first_response)
+                first_response = (
+                    await self._subscription_telnet.readline(self._timeout)
+                ).strip()
 
         second_response = (
             await self._subscription_telnet.readline(self._timeout)
         ).strip()
+
+        if identifier in self._subscriptions:
+            while second_response.startswith('! "publishToken":'):
+                await self.process_tesira_response(first_response)
+                first_response = (
+                    await self._subscription_telnet.readline(self._timeout)
+                ).strip()
 
         if second_response == "+OK":
             original_value: str = first_response.split(" ")[2].split(":")[1]
             other_items = {}
 
             # Eliminate the blank line before continuing onwards
-            await self._subscription_telnet.readline(self._timeout)
+            await self.process_tesira_response(
+                await self._subscription_telnet.readline(self._timeout)
+            )
 
             match subscription.attribute:
                 case "mute":
@@ -147,7 +166,9 @@ class BiampTesiraConnection:
             await self._mqtt.publish_state(subscription.name, data, self._serial_number)
         else:
             # Eliminate the blank line before continuing onwards
-            await self._subscription_telnet.readline(self._timeout)
+            await self.process_tesira_response(
+                await self._subscription_telnet.readline(self._timeout)
+            )
 
     async def get_min_max_levels(self, subscription: Subscription) -> dict[str, float]:
         """Get the min and max levels of a level control block."""
@@ -169,11 +190,15 @@ class BiampTesiraConnection:
             min_level = TypeAdapter(float).validate_python(
                 response.split(" ")[1].split(":")[1]
             )
+        elif response.startswith('! "publishToken":'):
+            await self.process_tesira_response(response)
         else:
             raise ClientResponseError(response)
 
-        # Elminate the blank line before continuing onwards
-        await self._subscription_telnet.readline(self._timeout)
+        # Eliminate the blank line before continuing onwards
+        await self.process_tesira_response(
+            await self._subscription_telnet.readline(self._timeout)
+        )
 
         response = (
             await self._write(
@@ -186,11 +211,15 @@ class BiampTesiraConnection:
             max_level = TypeAdapter(float).validate_python(
                 response.split(" ")[1].split(":")[1]
             )
+        elif response.startswith('! "publishToken":'):
+            await self.process_tesira_response(response)
         else:
             raise ClientResponseError(response)
 
-        # Elminate the blank line before continuing onwards
-        await self._subscription_telnet.readline(self._timeout)
+        # Eliminate the blank line before continuing onwards
+        await self.process_tesira_response(
+            await self._subscription_telnet.readline(self._timeout)
+        )
 
         return {"min_level": min_level, "max_level": max_level}
 
@@ -224,25 +253,42 @@ class BiampTesiraConnection:
         _LOGGER.debug("Starting Tesira subscription telnet reading loop")
         while True:
             try:
-                response = await self._subscription_telnet.readline(self._timeout)
+                response = None
+                async with self._semaphore:
+                    response = await self._subscription_telnet.readline(self._timeout)
 
-                if not response or response in ("\r\n", "+OK"):
-                    continue
-                if not response.startswith('! "publishToken":'):
-                    continue
-                tokens = response.split(" ")
-                key = tokens[1].split(":")[1][1:-1]
-                self._subscriptions[key]["state"] = TypeAdapter(
-                    self._subscriptions[key]["variable_type"]
-                ).validate_python(tokens[2].split(":")[1])
-
-                await self._mqtt.publish_state(
-                    self._subscriptions[key]["name"],
-                    self._subscriptions[key],
-                    self._serial_number,
-                )
+                await self.process_tesira_response(response)
             except ClientTimeoutError:
                 continue
+
+    async def process_tesira_response(self, response: str) -> None:
+        """Process the response to a command."""
+        if not response or response in ("\r\n", "+OK"):
+            return
+        if not response.startswith('! "publishToken":'):
+            return
+        tokens = response.split(" ")
+        key = tokens[1].split(":")[1][1:-1]
+        self._subscriptions[key]["state"] = TypeAdapter(
+            self._subscriptions[key]["variable_type"]
+        ).validate_python(tokens[2].split(":")[1])
+
+        await self._mqtt.publish_state(
+            self._subscriptions[key]["name"],
+            self._subscriptions[key],
+            self._serial_number,
+        )
+
+    async def automatically_subscribe_on_schedule(
+        self, subscriptions: set[Subscription]
+    ) -> None:
+        """Rerun the subscription process automatically every minute."""
+        _LOGGER.debug("Starting Tesira subscription setting loop")
+        while True:
+            await asyncio.sleep(self._tesira.resubscription_time)
+            _LOGGER.debug("Resubscribing to all subscriptions")
+            async with self._semaphore:
+                await self.subscribe_all(subscriptions)
 
     async def _write(
         self, command: str, telnet: BiampTesiraTelnetConnection | None
