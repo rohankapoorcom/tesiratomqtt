@@ -22,8 +22,6 @@ _LOGGER = logging.getLogger(__name__)
 class BiampTesiraConnection:
     """BiampTesiraConnection used for communication with Biamp Tesira DSPs."""
 
-    manufacturer = "Biamp Systems, LLC"
-
     def __init__(self, tesira: TesiraConfig, mqtt: MqttConnection) -> None:
         """Initiate a Biamp Tesira connection."""
         self._tesira: TesiraConfig = tesira

@@ -8,6 +8,7 @@ import aiomqtt
 _LOGGER = logging.getLogger(__name__)
 
 AVAILABILITY_TOPIC = "{0}/availability"
+MANUFACTURER = "Biamp Systems, LLC"
 
 
 class MqttConnection:
@@ -78,7 +79,7 @@ class MqttConnection:
             "dev": {
                 "ids": f"tesira2mqtt_{data['device_id']}",
                 "name": data["device_name"],
-                "mf": "Biamp",
+                "mf": MANUFACTURER,
                 "sn": serial,
             },
             "origin": {"name": "Tesira2MQTT"},
