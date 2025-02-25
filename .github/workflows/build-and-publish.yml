@@ -4,7 +4,7 @@ name: Build and publish a Docker image
 on:
   push:
     branches:
-      -'main'
+      - 'main'
     tags:
       - 'v*'
   pull_request:
@@ -23,7 +23,7 @@ jobs:
       packages: write
       attestations: write
       id-token: write
-      #
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
