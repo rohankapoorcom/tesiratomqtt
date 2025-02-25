@@ -1,10 +1,9 @@
 """Maintains connections to the MQTT Server."""
 
-import aiomqtt
 import json
 import logging
-from models import MqttConfig
 
+import aiomqtt
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -15,12 +14,13 @@ class MqttConnection:
     """MqttConnection used for communication with MQTT."""
 
     def __init__(self, client: aiomqtt.Client, base_topic: str) -> None:
+        """Initialize an object to manage MQTT communications."""
         self._client = client
         self._base_topic = base_topic
         self._published_names = set()
         self._qos = 2
 
-    async def publish_status(self, status="online") -> None:
+    async def publish_status(self, status: str = "online") -> None:
         """Indicate that the server is available."""
         await self._client.publish(
             topic=AVAILABILITY_TOPIC.format(self._base_topic),
@@ -29,12 +29,12 @@ class MqttConnection:
             qos=self._qos,
         )
 
-    async def publish_state(self, name, data, serial) -> None:
+    async def publish_state(self, name: str, data: dict, serial: str) -> None:
         """Publish the state of an object."""
-        state = data.get("state")
-        identifier = data.get("identifier")
-        topic_name = f"{data['device_name']} {name}"
-        topic_state = f"{self._base_topic}/{identifier}/state"
+        state: str = data["state"]
+        identifier: str = data["identifier"]
+        topic_name: str = f"{data['device_name']} {name}"
+        topic_state: str = f"{self._base_topic}/{identifier}/state"
         _LOGGER.debug(
             "Publishing state %s for %s to %s", state, topic_name, topic_state
         )
@@ -62,9 +62,16 @@ class MqttConnection:
             self._published_names.add(identifier)
 
     async def publish_discovery(
-        self, name, data, serial, topic_state, topic_name, identifier
+        self,
+        name: str,
+        data: dict,
+        serial: str,
+        topic_state: str,
+        topic_name: str,
+        identifier: str,
     ) -> None:
         """Publish the discovery message for Home Assistant."""
+        _LOGGER.info("Publishing discovery info for %s", identifier)
         ha_type = ""
         topic_command = f"{self._base_topic}/{identifier}/set"
         payload = {

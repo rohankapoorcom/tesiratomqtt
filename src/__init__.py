@@ -5,7 +5,8 @@ import asyncio
 import json
 import logging
 import signal
-from signal import SIGINT
+import sys
+from pathlib import Path
 
 import aiomqtt
 import yaml
@@ -31,12 +32,24 @@ def parse_arguments() -> argparse.Namespace:
             "(can also be provided by using the environmental variable CONFIG)."
         ),
     )
+    parser.add_argument(
+        "-l",
+        "--loglevel",
+        action=EnvDefault,
+        envvar="LOGLEVEL",
+        default="info",
+        choices=logging._nameToLevel.keys(),  # noqa: SLF001
+        help="Specify the logging level that should be used; default=info",
+    )
     return parser.parse_args()
 
 
-def load_config(config_path: str) -> Config:
+def load_config(config_file: str) -> Config:
     """Load the configuration file to a dictionary."""
-    with open(config_path) as f:
+    config_path = Path(config_file)
+    if not config_path.exists() and not config_path.is_file():
+        sys.exit(f"Config file: {config_file} does not exist")
+    with Path(config_path).open() as f:
         return Config(**yaml.safe_load(f))
 
 
@@ -62,10 +75,13 @@ async def handle_exit(
 
 
 async def listen_to_incoming_mqtt_messages(
-    mqtt_client: aiomqtt.Client, tesira_connection: BiampTesiraConnection
+    barrier: asyncio.Barrier,
+    mqtt_client: aiomqtt.Client,
+    tesira_connection: BiampTesiraConnection,
 ) -> None:
     """Infinitely process incoming MQTT messages."""
-    _LOGGER.debug("Starting MQTT subscription reading loop")
+    _LOGGER.info("Starting MQTT subscription reading loop")
+    await barrier.wait()
     async for message in mqtt_client.messages:
         decoded_payload: str = message.payload.decode()  # type: ignore  # noqa: PGH003
         _LOGGER.debug("%s - Received MQTT message: %s", message.topic, decoded_payload)
@@ -96,21 +112,24 @@ async def async_main() -> None:
                 config.tesira, config.subscriptions, mqtt_connection
             )
 
+            barrier = asyncio.Barrier(4)
             tasks = []
             tasks.append(
-                tg.create_task(tesira_connection.listen_to_incoming_messages())
+                tg.create_task(tesira_connection.listen_to_incoming_messages(barrier))
             )
 
             tasks.append(
                 tg.create_task(
-                    listen_to_incoming_mqtt_messages(mqtt_client, tesira_connection)
+                    listen_to_incoming_mqtt_messages(
+                        barrier, mqtt_client, tesira_connection
+                    )
                 )
             )
 
             tasks.append(
                 tg.create_task(
                     tesira_connection.automatically_subscribe_on_schedule(
-                        config.subscriptions
+                        barrier, config.subscriptions
                     )
                 )
             )
@@ -123,17 +142,19 @@ async def async_main() -> None:
                     ),
                 )
 
+            await barrier.wait()
+            _LOGGER.info("Tesira2MQTT is ready")
+
     for signame in ("SIGINT", "SIGTERM"):
         asyncio.get_running_loop().remove_signal_handler(getattr(signal, signame))
 
 
 if __name__ == "__main__":
     args = parse_arguments()
-    config = load_config(args.config)
-
     logging.basicConfig(
-        level=logging.DEBUG,
+        level=args.loglevel.upper(),
         format="%(asctime)s - %(levelname)s - %(message)s",
         force=True,
     )
+    config = load_config(args.config)
     asyncio.run(async_main())

@@ -37,6 +37,8 @@ class BiampTesiraConnection:
 
     async def open(self) -> None:
         """Open the telnet clients for communication."""
+        msg = f"Connecting to Tesira at {self._tesira.host}:{self._tesira.port}"
+        _LOGGER.info(msg)
         if (
             self._subscription_telnet is None
             or self._subscription_telnet.writer is None
@@ -55,6 +57,8 @@ class BiampTesiraConnection:
             )
 
         self._serial_number = await self.command("DEVICE get serialNumber")
+        msg = f"Connected to Tesira at {self._tesira.host}:{self._tesira.port}"
+        _LOGGER.info(msg)
 
     async def _async_create_telnet_client(
         self, identifier: str
@@ -86,11 +90,15 @@ class BiampTesiraConnection:
             return connection
 
     async def subscribe_all(self, subscriptions: set[Subscription]) -> None:
+        """Create all of the Tesira subscriptions."""
+        _LOGGER.info("Subscribing to Tesira")
         for subscription in subscriptions:
             await self.subscribe(subscription)
             await asyncio.sleep(1)
+        _LOGGER.info("Tesira Subscriptions created successfully")
 
     async def subscribe(self, subscription: Subscription) -> None:
+        """Create a single Tesira subscription."""
         if self._subscription_telnet is None or self._subscription_telnet.closed:
             msg = "Client not connected."
             raise ClientConnectionError(msg)
@@ -244,13 +252,14 @@ class BiampTesiraConnection:
             return response[13:-1]
         return response
 
-    async def listen_to_incoming_messages(self) -> None:
+    async def listen_to_incoming_messages(self, barrier) -> None:
         """Receive incoming messages from the Tesira and process."""
         if self._subscription_telnet is None or self._subscription_telnet.closed:
             msg = "Client not connected."
             raise ClientConnectionError(msg)
 
-        _LOGGER.debug("Starting Tesira subscription telnet reading loop")
+        _LOGGER.info("Starting Tesira subscription telnet reading loop")
+        await barrier.wait()
         while True:
             try:
                 response = None
@@ -280,10 +289,11 @@ class BiampTesiraConnection:
         )
 
     async def automatically_subscribe_on_schedule(
-        self, subscriptions: set[Subscription]
+        self, barrier: asyncio.Barrier, subscriptions: set[Subscription]
     ) -> None:
         """Rerun the subscription process automatically every minute."""
-        _LOGGER.debug("Starting Tesira subscription setting loop")
+        _LOGGER.info("Starting Tesira subscription setting loop")
+        await barrier.wait()
         while True:
             await asyncio.sleep(self._tesira.resubscription_time)
             _LOGGER.debug("Resubscribing to all subscriptions")
