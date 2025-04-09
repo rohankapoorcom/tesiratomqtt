@@ -108,7 +108,7 @@ class BiampTesiraTelnetConnection:
             data = await asyncio.wait_for(self.reader.readline(), timeout_time)
             cleaned_data = data.replace("\x00", "").strip()  # type: ignore  # noqa: PGH003
             _LOGGER.debug("%s - Received %s", self.identifier, cleaned_data)
-        except TimeoutError as err:
+        except TimeoutError:
             return ""
         except (OSError, asyncio.IncompleteReadError) as err:
             raise ClientConnectionError from err
