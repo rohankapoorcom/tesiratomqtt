@@ -103,9 +103,14 @@ class MqttConnection:
                 payload["payload_off"] = False
             case "float":
                 ha_type = "number"
-                payload["max"] = data["max_level"]
-                payload["min"] = data["min_level"]
-                payload["step"] = 0.1
+                payload.update(
+                    {
+                        "max": data["max_level"],
+                        "min": data["min_level"],
+                        "step": 0.1,
+                        "unit_of_measurement": "dB",
+                    }
+                )
             case _:
                 # We only support mute / levels currently
                 return

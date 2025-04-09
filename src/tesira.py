@@ -65,7 +65,13 @@ class BiampTesiraConnection:
         try:
             connection = BiampTesiraTelnetConnection(
                 *await asyncio.wait_for(
-                    telnetlib3.open_connection(self._tesira.host, self._tesira.port),
+                    telnetlib3.open_connection(
+                        self._tesira.host,
+                        self._tesira.port,
+                        encoding="utf8",
+                        cols=1310,
+                        rows=125,
+                    ),
                     timeout=self._timeout,
                 ),
                 identifier=identifier,
@@ -113,6 +119,11 @@ class BiampTesiraConnection:
                 self._subscription_telnet,
             )
         ).strip()
+
+        if not first_response or first_response in ("\r\n"):
+            first_response = (
+                await self._subscription_telnet.readline(self._timeout)
+            ).strip()
 
         if "-ERR ALREADY_SUBSCRIBED" in first_response:
             return
