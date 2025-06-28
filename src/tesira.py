@@ -101,7 +101,7 @@ class BiampTesiraConnection:
             await asyncio.sleep(1)
         _LOGGER.info("Tesira Subscriptions created successfully")
 
-    async def subscribe(self, subscription: Subscription) -> None: # noqa: PLR0912
+    async def subscribe(self, subscription: Subscription) -> None:  # noqa: PLR0912
         """Create a single Tesira subscription."""
         if self._subscription_telnet is None or self._subscription_telnet.closed:
             msg = "Client not connected."
