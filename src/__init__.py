@@ -69,10 +69,27 @@ async def handle_exit(
 ) -> None:
     """Gracefully exit by cancelling all long-running tasks."""
     _LOGGER.info("Exiting gracefully")
-    await mqtt.publish_status("offline")
+
+    # Publish offline status with timeout to ensure delivery
+    try:
+        await asyncio.wait_for(mqtt.publish_status("offline"), timeout=5.0)
+        _LOGGER.info("Offline status published successfully")
+    except TimeoutError:
+        _LOGGER.warning(
+            "Timeout publishing offline status - message may not be delivered"
+        )
+    except Exception:
+        _LOGGER.exception("Failed to publish offline status")
+
+    # Cancel all tasks
     for task in tasks:
         task.cancel()
-    await tesira.close()
+
+    # Close Tesira connection
+    try:
+        await tesira.close()
+    except Exception:
+        _LOGGER.exception("Error closing Tesira connection")
 
 
 async def listen_to_incoming_mqtt_messages(
@@ -135,12 +152,31 @@ async def async_main() -> None:
                 )
             )
 
+            # Create signal handlers with proper variable capture
+            def create_signal_handler(
+                mqtt: MqttConnection,
+                tesira: BiampTesiraConnection,
+                tasks: list[asyncio.Task],
+            ) -> callable:
+                """Create a signal handler that captures variables by value."""
+
+                async def signal_handler() -> None:
+                    """Handle signal by gracefully shutting down the application."""
+                    try:
+                        await handle_exit(mqtt, tesira, tasks)
+                    except Exception:
+                        _LOGGER.exception("Error during graceful shutdown")
+                        # Force exit if graceful shutdown fails
+                        sys.exit(1)
+
+                return signal_handler
+
             for signame in ("SIGINT", "SIGTERM"):
+                handler = create_signal_handler(
+                    mqtt_connection, tesira_connection, tasks
+                )
                 asyncio.get_running_loop().add_signal_handler(
-                    getattr(signal, signame),
-                    lambda: asyncio.create_task(
-                        handle_exit(mqtt_connection, tesira_connection, tasks)
-                    ),
+                    getattr(signal, signame), lambda h=handler: asyncio.create_task(h())
                 )
 
             await barrier.wait()
