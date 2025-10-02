@@ -22,3 +22,4 @@ glob = "**/*.md"
 serialize = ["{major}.{minor}.{patch}"]
 search = "**Version**: {current_version}"
 replace = "**Version**: {new_version}"
+ignore_missing_version = true
