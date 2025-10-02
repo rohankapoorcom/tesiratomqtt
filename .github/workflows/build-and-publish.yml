@@ -5,8 +5,6 @@ on:
   push:
     branches:
       - 'main'
-    tags:
-      - 'v*'
   pull_request:
     branches:
       - 'main'
@@ -38,6 +36,13 @@ jobs:
           args: patch
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Checkout updated code (after version bump)
+        if: steps.bump.outputs.bumped == 'true'
+        uses: actions/checkout@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
       - name: Check version bump
         if: steps.bump.outputs.bumped == 'true'
         run: |
@@ -50,6 +55,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Get current version
+        if: steps.bump.outputs.bumped != 'true'
+        id: current-version
+        run: |
+          current_version=$(python3 -c "import sys; sys.path.append('src'); from _version import __version__; print(__version__)")
+          echo "version=$current_version" >> $GITHUB_OUTPUT
+          echo "Current version: $current_version"
+
       - name: Extract metadata (tags, labels) for Docker
         id: meta
         uses: docker/metadata-action@v5
@@ -58,8 +71,9 @@ jobs:
           tags: |
             type=ref,event=branch
             type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=${{ steps.bump.outputs.current-version || steps.current-version.outputs.version }},enable=${{ github.event_name != 'pull_request' }}
+            type=raw,value=pr-${{ github.event.number }}-${{ steps.bump.outputs.current-version || steps.current-version.outputs.version }},enable=${{ github.event_name == 'pull_request' }}
+            type=raw,value=pr-${{ github.event.number }}-${{ github.sha }},enable=${{ github.event_name == 'pull_request' }}
 
       - name: Build and push Docker image
         id: push
