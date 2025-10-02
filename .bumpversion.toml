@@ -18,7 +18,7 @@ search = 'current_version = "{current_version}"'
 replace = 'current_version = "{new_version}"'
 
 [[tool.bumpversion.files]]
-filename = "**/*"
+glob = "**/*.md"
 serialize = ["{major}.{minor}.{patch}"]
 search = "**Version**: {current_version}"
 replace = "**Version**: {new_version}"
