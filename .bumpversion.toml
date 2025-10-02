@@ -18,49 +18,9 @@ search = 'current_version = "{current_version}"'
 replace = 'current_version = "{new_version}"'
 
 [[tool.bumpversion.files]]
-filename = "README.md"
+glob = "**/*.md"
 serialize = ["{major}.{minor}.{patch}"]
-search = "**Version**: {current_version}"
-replace = "**Version**: {new_version}"
-
-[[tool.bumpversion.files]]
-filename = "docs/index.md"
-serialize = ["{major}.{minor}.{patch}"]
-search = "**Documentation Version**: {current_version}"
-replace = "**Documentation Version**: {new_version}"
-
-[[tool.bumpversion.files]]
-filename = "docs/user-guides/quick-start.md"
-serialize = ["{major}.{minor}.{patch}"]
-search = "**Quick Start Version**: {current_version}"
-replace = "**Quick Start Version**: {new_version}"
-
-[[tool.bumpversion.files]]
-filename = "docs/configuration/config-schema.md"
-serialize = ["{major}.{minor}.{patch}"]
-search = "**Schema Version**: {current_version}"
-replace = "**Schema Version**: {new_version}"
-
-[[tool.bumpversion.files]]
-filename = "docs/api/mqtt-connection.md"
-serialize = ["{major}.{minor}.{patch}"]
-search = "**API Version**: {current_version}"
-replace = "**API Version**: {new_version}"
-
-[[tool.bumpversion.files]]
-filename = "docs/architecture/system-overview.md"
-serialize = ["{major}.{minor}.{patch}"]
-search = "**Architecture Version**: {current_version}"
-replace = "**Architecture Version**: {new_version}"
-
-[[tool.bumpversion.files]]
-filename = "docs/api/tesira-connection.md"
-serialize = ["{major}.{minor}.{patch}"]
-search = "**API Version**: {current_version}"
-replace = "**API Version**: {new_version}"
-
-[[tool.bumpversion.files]]
-filename = "docs/api/models.md"
-serialize = ["{major}.{minor}.{patch}"]
-search = "**API Version**: {current_version}"
-replace = "**API Version**: {new_version}"
+search = "\\*\\*[^*]*Version\\*\\*: {current_version}"
+replace = "\\*\\*[^*]*Version\\*\\*: {new_version}"
+regex = true
+ignore_missing_version = true
