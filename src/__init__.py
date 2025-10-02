@@ -6,6 +6,7 @@ import json
 import logging
 import signal
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import aiomqtt
@@ -157,7 +158,7 @@ async def async_main() -> None:
                 mqtt: MqttConnection,
                 tesira: BiampTesiraConnection,
                 tasks: list[asyncio.Task],
-            ) -> callable:
+            ) -> Callable[[], None]:
                 """Create a signal handler that captures variables by value."""
 
                 async def signal_handler() -> None:
