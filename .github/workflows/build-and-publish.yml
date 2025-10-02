@@ -19,7 +19,7 @@ jobs:
   build-and-push-image:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
       attestations: write
       id-token: write
@@ -27,6 +27,24 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Bump version and commit (only for pushes to main)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && !startsWith(github.event.head_commit.message, 'auto:')
+        id: bump
+        uses: callowayproject/bump-my-version@master
+        env:
+          BUMPVERSION_TAG: "false"
+        with:
+          args: patch
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check version bump
+        if: steps.bump.outputs.bumped == 'true'
+        run: |
+          echo "Version was bumped from ${{ steps.bump.outputs.previous-version }} to ${{ steps.bump.outputs.current-version }}!"
+
       - name: Log in to the Container registry
         uses: docker/login-action@v3
         with:
