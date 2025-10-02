@@ -1,6 +1,6 @@
 aiomqtt==2.4.0
 pip>=21.3.1
-pydantic==2.11.7
+pydantic==2.11.9
 PyYAML==6.0.3
 ruff==0.13.2
 telnetlib3==2.0.8
