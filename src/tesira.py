@@ -329,6 +329,19 @@ class BiampTesiraConnection:
     async def close(self) -> None:
         """Close all telnet connections."""
         if self._subscription_telnet is not None:
-            self._subscription_telnet.close()
+            try:
+                self._subscription_telnet.close()
+                _LOGGER.debug("Subscription telnet connection closed")
+            except (OSError, RuntimeError):
+                _LOGGER.exception("Error closing subscription telnet connection")
+            finally:
+                self._subscription_telnet = None
+
         if self._command_telnet is not None:
-            self._command_telnet.close()
+            try:
+                self._command_telnet.close()
+                _LOGGER.debug("Command telnet connection closed")
+            except (OSError, RuntimeError):
+                _LOGGER.exception("Error closing command telnet connection")
+            finally:
+                self._command_telnet = None
