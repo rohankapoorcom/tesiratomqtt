@@ -437,4 +437,4 @@ async def monitor_multiple_devices(tesira_conn, subscriptions):
 ---
 
 **Last Updated**: September 2025
-**API Version**: 1.1.0
+**API Version**: 1.1.2
