@@ -329,4 +329,4 @@ Local Network
 ---
 
 **Last Updated**: September 2025
-\*\*[^*]*Version\*\*: 1.1.7
+**Architecture Version**: 1.1.7
