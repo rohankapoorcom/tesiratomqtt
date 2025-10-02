@@ -74,6 +74,8 @@ jobs:
             type=raw,value=${{ steps.bump.outputs.current-version || steps.current-version.outputs.version }},enable=${{ github.event_name != 'pull_request' }}
             type=raw,value=pr-${{ github.event.number }}-${{ steps.bump.outputs.current-version || steps.current-version.outputs.version }},enable=${{ github.event_name == 'pull_request' }}
             type=raw,value=pr-${{ github.event.number }}-${{ github.sha }},enable=${{ github.event_name == 'pull_request' }}
+          labels: |
+            org.opencontainers.image.licenses=MIT
 
       - name: Build and push Docker image
         id: push
