@@ -6,5 +6,5 @@ message = "auto: bump version to {new_version}"
 
 [[tool.bumpversion.files]]
 filename = "src/_version.py"
-search = "__version_info__ = ({major}, {minor}, {patch})"
-replace = "__version_info__ = ({new_major}, {new_minor}, {new_patch})"
+search = "__version_info__ = ({current_version})"
+replace = "__version_info__ = ({new_version})"
