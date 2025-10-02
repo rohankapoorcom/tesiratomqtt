@@ -20,6 +20,7 @@ replace = 'current_version = "{new_version}"'
 [[tool.bumpversion.files]]
 glob = "**/*.md"
 serialize = ["{major}.{minor}.{patch}"]
-search = "**Version**: {current_version}"
-replace = "**Version**: {new_version}"
+search = "\\*\\*.*Version\\*\\*: {current_version}"
+replace = "\\*\\*.*Version\\*\\*: {new_version}"
+regex = true
 ignore_missing_version = true
