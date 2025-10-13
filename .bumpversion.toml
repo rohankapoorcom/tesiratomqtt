@@ -1,5 +1,5 @@
 [tool.bumpversion]
-current_version = "1.1.8"
+current_version = "1.1.9"
 serialize = ["{major}.{minor}.{patch}"]
 commit = true
 tag = false
