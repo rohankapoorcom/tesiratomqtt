@@ -4,6 +4,7 @@ import json
 import logging
 
 import aiomqtt
+import slugify
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -90,12 +91,12 @@ class MqttConnection:
                 }
             ],
             "name": name,
-            "object_id": topic_name,
             "state_topic": topic_state,
             "unique_id": data["unique_id"],
             "value_template": "{{ value_json }}",
             "command_topic": topic_command,
         }
+
         match data["variable_type"]:
             case "bool":
                 ha_type = "switch"
@@ -115,9 +116,13 @@ class MqttConnection:
                 # We only support mute / levels currently
                 return
 
+        slug = slugify.slugify(topic_name, separator="_")
+        payload["default_entity_id"] = f"{ha_type}.{slug}"
+
         await self._client.subscribe(topic_command)
 
         topic_config = f"homeassistant/{ha_type}/{data['unique_id']}/config"
         await self._client.publish(
             topic=topic_config, payload=json.dumps(payload), retain=True, qos=self._qos
         )
+        _LOGGER.debug("Published discovery info for %s to %s", identifier, topic_config)
