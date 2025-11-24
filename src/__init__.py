@@ -13,6 +13,7 @@ import aiomqtt
 import yaml
 
 from _version import __version__
+from errors import ClientConnectionError, ClientTimeoutError
 from models import Config, Subscription, TesiraConfig
 from mqtt_connection import AVAILABILITY_TOPIC, MqttConnection
 from tesira import BiampTesiraConnection
@@ -66,7 +67,9 @@ async def establish_tesira_connection(
 
 
 async def handle_exit(
-    mqtt: MqttConnection, tesira: BiampTesiraConnection, tasks: list[asyncio.Task]
+    mqtt: MqttConnection,
+    tesira: BiampTesiraConnection | None = None,
+    tasks: list[asyncio.Task] | None = None,
 ) -> None:
     """Gracefully exit by cancelling all long-running tasks."""
     _LOGGER.info("Exiting gracefully")
@@ -82,15 +85,17 @@ async def handle_exit(
     except Exception:
         _LOGGER.exception("Failed to publish offline status")
 
-    # Cancel all tasks
-    for task in tasks:
-        task.cancel()
+    # Cancel all tasks if they exist
+    if tasks:
+        for task in tasks:
+            task.cancel()
 
-    # Close Tesira connection
-    try:
-        await tesira.close()
-    except Exception:
-        _LOGGER.exception("Error closing Tesira connection")
+    # Close Tesira connection if it exists
+    if tesira:
+        try:
+            await tesira.close()
+        except Exception:
+            _LOGGER.exception("Error closing Tesira connection")
 
 
 async def listen_to_incoming_mqtt_messages(
@@ -126,10 +131,17 @@ async def async_main() -> None:
     async with mqtt_client:  # noqa: SIM117
         async with asyncio.TaskGroup() as tg:
             mqtt_connection = MqttConnection(mqtt_client, config.mqtt.base_topic)
-            await mqtt_connection.publish_status()
-            tesira_connection = await establish_tesira_connection(
-                config.tesira, config.subscriptions, mqtt_connection
-            )
+            try:
+                tesira_connection = await establish_tesira_connection(
+                    config.tesira, config.subscriptions, mqtt_connection
+                )
+            except (ClientConnectionError, ClientTimeoutError):
+                _LOGGER.exception("Failed to establish Tesira connection")
+                # Clean up: publish offline status and exit gracefully
+                await handle_exit(mqtt_connection, None, None)
+                # Allow time for message delivery before exiting
+                await asyncio.sleep(0.5)
+                sys.exit(1)
 
             barrier = asyncio.Barrier(4)
             tasks = []
@@ -180,6 +192,8 @@ async def async_main() -> None:
                     getattr(signal, signame), lambda h=handler: asyncio.create_task(h())
                 )
 
+            # Publish online status after all tasks are created and ready
+            await mqtt_connection.publish_status()
             await barrier.wait()
             _LOGGER.info("Tesira2MQTT is ready")
 

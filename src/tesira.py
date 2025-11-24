@@ -55,7 +55,16 @@ class BiampTesiraConnection:
             )
 
         self._serial_number = await self.command("DEVICE get serialNumber")
-        msg = f"Connected to Tesira at {self._tesira.host}:{self._tesira.port}"
+        if not self._serial_number:
+            msg = (
+                f"Failed to get serial number from Tesira at "
+                f"{self._tesira.host}:{self._tesira.port}"
+            )
+            raise ClientConnectionError(msg)
+        msg = (
+            f"Connected to Tesira {self._serial_number} at "
+            f"{self._tesira.host}:{self._tesira.port}"
+        )
         _LOGGER.info(msg)
 
     async def _async_create_telnet_client(
