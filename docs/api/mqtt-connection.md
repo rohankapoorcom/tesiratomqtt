@@ -250,4 +250,4 @@ async def setup_home_assistant_entity(mqtt_conn, device_info):
 ---
 
 **Last Updated**: September 2025
-**API Version**: 1.1.10
+**API Version**: 1.1.11
