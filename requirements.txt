@@ -1,4 +1,4 @@
-aiomqtt==2.4.0
+aiomqtt==2.5.0
 pip>=21.3.1
 pydantic==2.12.4
 python-slugify==8.0.4
