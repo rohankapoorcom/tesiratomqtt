@@ -1,6 +1,6 @@
 aiomqtt==2.5.0
 pip>=21.3.1
-pydantic==2.12.4
+pydantic==2.12.5
 python-slugify==8.0.4
 PyYAML==6.0.3
 ruff==0.14.10
