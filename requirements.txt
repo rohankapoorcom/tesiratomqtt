@@ -3,5 +3,5 @@ pip>=21.3.1
 pydantic==2.12.5
 python-slugify==8.0.4
 PyYAML==6.0.3
-ruff==0.15.1
+ruff==0.15.2
 telnetlib3==2.0.8
