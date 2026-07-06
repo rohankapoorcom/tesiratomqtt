@@ -81,4 +81,4 @@ This documentation is maintained using an AI-powered documentation generator tha
 ---
 
 **Last Updated**: September 2025
-**Documentation Version**: 1.1.25
+**Documentation Version**: 1.1.26

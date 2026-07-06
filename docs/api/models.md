@@ -387,4 +387,4 @@ except ValidationError as e:
 ---
 
 **Last Updated**: September 2025
-**API Version**: 1.1.25
+**API Version**: 1.1.26
