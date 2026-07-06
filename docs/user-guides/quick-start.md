@@ -137,4 +137,4 @@ If devices don't appear automatically:
 ---
 
 **Last Updated**: September 2025
-**Quick Start Version**: 1.1.21
+**Quick Start Version**: 1.1.22
