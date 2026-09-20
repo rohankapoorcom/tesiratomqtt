@@ -16,7 +16,7 @@ Pull requests are the best way to propose changes to the codebase.
 1. Fork the repo and create your branch from `main`.
 2. If you've changed something, update the documentation.
 3. Make sure your code lints (using `scripts/lint`).
-4. Test you contribution.
+4. Make sure the tests pass (using `scripts/test`) and add tests for your change; the fake Tesira server in `tests/fake_tesira.py` lets you test device behaviour without hardware.
 5. Issue that pull request!
 
 ## Any contributions you make will be under the MIT Software License
@@ -48,13 +48,16 @@ Use [black](https://github.com/ambv/black) to make sure the code follows the sty
 
 ## Test your code modification
 
-This custom component is based on [integration_blueprint](https://github.com/ludeeus/integration_blueprint).
+The project ships a development container (`.devcontainer.json`) that installs
+everything from `requirements-dev.txt`; open the repository in Visual Studio Code
+and choose "Reopen in Container", or create a virtual environment locally and run
+`scripts/setup`.
 
-It comes with development environment in a container, easy to launch
-if you use Visual Studio Code. With this container you will have a stand alone
-Home Assistant instance running and already configured with the included
-[`configuration.yaml`](./config/configuration.yaml)
-file.
+Run `scripts/test` to execute the pytest suite. The tests do not need a Tesira
+or an MQTT broker: `tests/fake_tesira.py` emulates the device's telnet
+behaviour, and the MQTT layer is replaced by a recording stub. If you have access
+to a real Tesira, `python src/__init__.py --config config.yaml --loglevel debug`
+shows every line exchanged with the device.
 
 ## License
 

@@ -2,38 +2,42 @@
 
 ## Overview
 
-The `BiampTesiraConnection` class manages communication with Biamp Tesira DSPs through telnet connections. It handles device subscriptions, command execution, and state monitoring.
+The `BiampTesiraConnection` class (`src/tesira.py`) manages communication with a Biamp Tesira DSP over telnet using the **Tesira Text Protocol (TTP)**. It owns the telnet sessions, creates and refreshes subscriptions, executes commands, keeps the current state of every subscribed control, and hands state changes to the MQTT layer.
 
-This class implements the **Tesira Text Protocol (TTP)** for communication with Biamp Tesira DSPs. For detailed information about TTP commands, responses, and subscription features, refer to the official Biamp documentation:
+For the protocol itself, refer to the official Biamp documentation:
 
-**[Tesira Text Protocol Documentation](https://support.biamp.com/Tesira/Control/Tesira_Text_Protocol)**
+- [Tesira Text Protocol](https://support.biamp.com/Tesira/Control/Tesira_Text_Protocol)
+- [Telnet session negotiation in Tesira](https://support.biamp.com/Tesira/Control/Telnet_session_negotiation_in_Tesira)
 
-## TTP Command Mapping
+## How the connection works
 
-The API methods in this class map to specific TTP commands:
+### Two sessions
 
-| API Method | TTP Command | Description |
-|------------|-------------|-------------|
-| `subscribe()` | `subscribe` | Subscribe to device attribute changes |
-| `unsubscribe()` | `unsubscribe` | Remove subscription to device attribute |
-| `set_level()` | `set level` | Set audio level for device |
-| `set_mute()` | `set mute` | Set mute state for device |
-| `get_level()` | `get level` | Get current audio level |
-| `get_mute()` | `get mute` | Get current mute state |
+Two telnet sessions are opened to the device, concurrently:
 
-### TTP Command Format
+- **subscription session** – carries every `subscribe` command and therefore receives the asynchronous `! "publishToken"` updates the Tesira sends whenever a subscribed value changes.
+- **command session** – carries `get` and `set` commands (including the ones triggered from MQTT) and the periodic heartbeat.
 
-All TTP commands follow this format:
-```
-<Instance Tag> <Command> <Attribute> <Index> [Custom Label] [Value]
-```
+TTP subscriptions are session-scoped: if a session drops, every subscription made on it is gone and has to be re-created. This is why the connection re-subscribes after a reconnect and, as a safety net, on a fixed schedule (`resubscription_time`).
 
-Example TTP commands sent by this API:
-```
-OfficeSpeakersPCLevel subscribe level 1 MyCustomLabel
-OfficeSpeakersPCLevel set level 1 75
-OfficeSpeakersPCLevel get mute 1
-```
+The Tesira accepts new sessions one at a time and takes roughly three seconds per session before it sends the `Welcome to the Tesira Text Protocol Server` banner, so opening the connection takes about six seconds regardless of how fast the network is.
+
+### Reader loop and line classification
+
+Each session has a background reader task that reads one line at a time and classifies it:
+
+| Line looks like | Handled as |
+|-----------------|------------|
+| `! "publishToken":"<label>" "value":<value>` | Subscription update: the value is stored and published to MQTT. A trailing ` +OK` (the Tesira sometimes folds the subscribe acknowledgement onto this line) also resolves the pending command. |
+| `+OK` or `+OK "value":<value>` | Success response for the command currently in flight on that session. |
+| `-ERR ...` | Error response for the command currently in flight on that session. |
+| anything else | Ignored. The Tesira echoes every command back through a terminal layer, sometimes wrapped or repeated; blank lines and terminal preamble also fall in here. |
+
+Because every command awaits its own `+OK`/`-ERR` line, nothing depends on timing, sleeps or on the echo arriving in a particular shape. Commands on a session are serialised with a lock so responses can never be attributed to the wrong request. If a command receives no response within `command_timeout` seconds the session is considered dead (a late reply would otherwise be mistaken for the next command's response) and the connection is torn down for the supervisor to rebuild.
+
+### Line endings
+
+The Tesira terminates lines with either `CR LF` or `CR NUL`; both are handled transparently by `src/telnet.py`.
 
 ## Class: BiampTesiraConnection
 
@@ -45,222 +49,14 @@ class BiampTesiraConnection:
 ### Constructor
 
 ```python
-def __init__(self, tesira: TesiraConfig, mqtt: MqttConnection) -> None:
-    """Initiate a Biamp Tesira connection."""
+def __init__(self, tesira: TesiraConfig, mqtt: MqttConnection) -> None
 ```
 
 **Parameters:**
-- `tesira` (TesiraConfig): Configuration object containing Tesira device connection details
-- `mqtt` (MqttConnection): MQTT connection instance for publishing device states
+- `tesira` (`TesiraConfig`): host, port, `resubscription_time`, `command_timeout`, `heartbeat_interval`.
+- `mqtt` (`MqttConnection`): used to publish state (and, on first sight of a control, its Home Assistant discovery message) via `publish_state()`.
 
-**Example:**
-```python
-from models import TesiraConfig
-from mqtt_connection import MqttConnection
-from tesira import BiampTesiraConnection
-
-tesira_config = TesiraConfig(
-    host="tesira.device.com",
-    port=23,
-    resubscription_time=300
-)
-
-mqtt_conn = MqttConnection(mqtt_client, "tesira2mqtt")
-tesira_conn = BiampTesiraConnection(tesira_config, mqtt_conn)
-```
-
-### Methods
-
-#### open()
-
-```python
-async def open(self) -> None:
-    """Open the telnet clients for communication."""
-```
-
-Establishes telnet connections to the Tesira device. Creates separate connections for subscriptions and commands.
-
-**Raises:**
-- `ClientConnectionError`: If unable to connect to Tesira device
-- `ClientTimeoutError`: If connection times out
-
-**Example:**
-```python
-try:
-    await tesira_conn.open()
-    print("Successfully connected to Tesira device")
-except ClientConnectionError as e:
-    print(f"Failed to connect: {e}")
-```
-
-#### close()
-
-```python
-async def close(self) -> None:
-    """Close the telnet clients."""
-```
-
-Closes all telnet connections to the Tesira device.
-
-**Example:**
-```python
-await tesira_conn.close()
-print("Tesira connections closed")
-```
-
-#### subscribe()
-
-```python
-async def subscribe(self, subscription: Subscription) -> None:
-    """Subscribe to a Tesira device attribute."""
-```
-
-Subscribes to a specific Tesira device attribute for state monitoring.
-
-**Parameters:**
-- `subscription` (Subscription): Subscription configuration object
-
-**Subscription Object:**
-```python
-subscription = Subscription(
-    instance_tag="OfficeSpeakersPCLevel",
-    attribute="level",
-    index=1,
-    name="Level",
-    device_name="Office Speakers PC"
-)
-```
-
-**Tesira Command:** `SUBSCRIBE "OfficeSpeakersPCLevel" level 1`
-
-**Example:**
-```python
-from models import Subscription
-
-subscription = Subscription(
-    instance_tag="OfficeSpeakersPCLevel",
-    attribute="level",
-    index=1,
-    name="Level",
-    device_name="Office Speakers PC"
-)
-
-await tesira_conn.subscribe(subscription)
-```
-
-#### unsubscribe()
-
-```python
-async def unsubscribe(self, subscription: Subscription) -> None:
-    """Unsubscribe from a Tesira device attribute."""
-```
-
-Unsubscribes from a Tesira device attribute.
-
-**Parameters:**
-- `subscription` (Subscription): Subscription configuration object to unsubscribe from
-
-**Tesira Command:** `UNSUBSCRIBE "OfficeSpeakersPCLevel" level 1`
-
-**Example:**
-```python
-await tesira_conn.unsubscribe(subscription)
-```
-
-#### set_level()
-
-```python
-async def set_level(self, instance_tag: str, index: int, level: int) -> None:
-    """Set the level of a Tesira device."""
-```
-
-Sets the audio level for a specific Tesira device instance.
-
-**Parameters:**
-- `instance_tag` (str): Tesira device instance tag
-- `index` (int): Device index (usually 1)
-- `level` (int): Level value (0-100)
-
-**Tesira Command:** `SET "OfficeSpeakersPCLevel" level 1 75`
-
-**Example:**
-```python
-# Set level to 75%
-await tesira_conn.set_level("OfficeSpeakersPCLevel", 1, 75)
-```
-
-#### set_mute()
-
-```python
-async def set_mute(self, instance_tag: str, index: int, mute: bool) -> None:
-    """Set the mute state of a Tesira device."""
-```
-
-Sets the mute state for a specific Tesira device instance.
-
-**Parameters:**
-- `instance_tag` (str): Tesira device instance tag
-- `index` (int): Device index (usually 1)
-- `mute` (bool): Mute state (True = muted, False = unmuted)
-
-**Tesira Command:** `SET "OfficeSpeakersPCLevel" mute 1 1` (muted) or `SET "OfficeSpeakersPCLevel" mute 1 0` (unmuted)
-
-**Example:**
-```python
-# Mute the device
-await tesira_conn.set_mute("OfficeSpeakersPCLevel", 1, True)
-
-# Unmute the device
-await tesira_conn.set_mute("OfficeSpeakersPCLevel", 1, False)
-```
-
-#### get_level()
-
-```python
-async def get_level(self, instance_tag: str, index: int) -> int:
-    """Get the current level of a Tesira device."""
-```
-
-Retrieves the current audio level for a specific Tesira device instance.
-
-**Parameters:**
-- `instance_tag` (str): Tesira device instance tag
-- `index` (int): Device index (usually 1)
-
-**Returns:**
-- `int`: Current level value (0-100)
-
-**Tesira Command:** `GET "OfficeSpeakersPCLevel" level 1`
-
-**Example:**
-```python
-current_level = await tesira_conn.get_level("OfficeSpeakersPCLevel", 1)
-print(f"Current level: {current_level}%")
-```
-
-#### get_mute()
-
-```python
-async def get_mute(self, instance_tag: str, index: int) -> bool:
-    """Get the current mute state of a Tesira device."""
-```
-
-Retrieves the current mute state for a specific Tesira device instance.
-
-**Parameters:**
-- `instance_tag` (str): Tesira device instance tag
-- `index` (int): Device index (usually 1)
-
-**Returns:**
-- `bool`: Current mute state (True = muted, False = unmuted)
-
-**Tesira Command:** `GET "OfficeSpeakersPCLevel" mute 1`
-
-**Example:**
-```python
-is_muted = await tesira_conn.get_mute("OfficeSpeakersPCLevel", 1)
-print(f"Device is {'muted' if is_muted else 'unmuted'}")
-```
+Constructing the object does not open any network connection.
 
 ### Properties
 
@@ -268,173 +64,214 @@ print(f"Device is {'muted' if is_muted else 'unmuted'}")
 
 ```python
 @property
-def serial_number(self) -> str | None:
-    """Get the serial number of the connected Tesira device."""
+def serial_number(self) -> str | None
 ```
 
-Returns the serial number of the connected Tesira device, or None if not connected.
+Serial number reported by the device via `DEVICE get serialNumber`, or `None` until `open()` has succeeded. The serial is validated against `^[A-Za-z0-9_-]+$` because it becomes part of every MQTT `unique_id` and Home Assistant discovery topic; `open()` raises `ClientResponseError` if the device returns anything else.
+
+#### connected
+
+```python
+@property
+def connected(self) -> bool
+```
+
+`True` while both sessions are open and no connection loss has been detected.
+
+### Lifecycle methods
+
+#### open()
+
+```python
+async def open(self) -> None
+```
+
+Opens both sessions concurrently, waits for the welcome banner on each, starts the reader tasks, reads and validates the serial number and starts the heartbeat (if `heartbeat_interval > 0`). Any previously open sessions are closed first, so `open()` can be used to reconnect.
+
+**Raises:**
+- `ClientConnectionError` – connection refused / reset, or the device closed the session.
+- `ClientTimeoutError` – connection, banner or serial number took longer than `command_timeout`.
+- `ClientResponseError` – the device answered with `-ERR` or an invalid serial number.
+
+#### close()
+
+```python
+async def close(self) -> None
+```
+
+Stops the heartbeat and reader tasks, closes both sessions and fails any command still in flight with `ClientConnectionError`. Also stops `run()` if it is active.
+
+#### wait_closed()
+
+```python
+async def wait_closed(self) -> None
+```
+
+Returns once the connection has been lost (peer disconnect, read error, heartbeat or command timeout) or closed. Useful for supervisors that want to react to connection loss.
+
+#### run()
+
+```python
+async def run(self, barrier: asyncio.Barrier, subscriptions: set[Subscription]) -> None
+```
+
+Supervises the connection until cancelled. After `barrier.wait()`:
+
+- If not connected, calls `open()` and `subscribe_all()`, retrying with exponential backoff (1 s doubling up to 60 s) while the device is unavailable.
+- While connected, waits for either a connection loss (then tears down and reconnects) or `resubscription_time` seconds elapsing (then calls `subscribe_all()` again to refresh the subscriptions).
+
+The application entry point runs this as a long-lived task next to the MQTT message loop.
+
+### Subscription methods
+
+#### subscribe()
+
+```python
+async def subscribe(self, subscription: Subscription) -> None
+```
+
+Sends `<instance_tag> subscribe <attribute> <index> <label>` on the subscription session, where the label is `<instance_tag>_<attribute>_<index>` and doubles as the MQTT identifier. For `level` subscriptions the block's `minLevel`/`maxLevel` are fetched first (needed for the Home Assistant `number` entity).
+
+The Tesira replies with the current value as a `publishToken` line followed by `+OK`; the value is stored and published. `-ERR ALREADY_SUBSCRIBED` is treated as success (the subscription is still active from an earlier call). If no initial value arrives, the current value is fetched with a `get`.
+
+**Raises:**
+- `ClientResponseError` – the device rejected the subscription (typically a wrong instance tag or index).
+- `ClientConnectionError` / `ClientTimeoutError` – session problems.
+
+#### subscribe_all()
+
+```python
+async def subscribe_all(self, subscriptions: set[Subscription]) -> None
+```
+
+Calls `subscribe()` for every entry. Rejected subscriptions are logged and skipped so one mistyped instance tag does not prevent the others from working; connection errors propagate.
+
+### Command methods
+
+#### command()
+
+```python
+async def command(self, command: str) -> str | None
+```
+
+Sends an arbitrary TTP command on the command session and returns the value from `+OK "value":<value>` (surrounding quotes removed), or `None` for a bare `+OK`.
 
 **Example:**
 ```python
-if tesira_conn.serial_number:
-    print(f"Connected to Tesira device: {tesira_conn.serial_number}")
+serial = await tesira_conn.command("DEVICE get serialNumber")   # '03787145'
+level = await tesira_conn.command("OfficeSpeakersPCLevel get level 1")  # '-4.000000'
+await tesira_conn.command("OfficeSpeakersPCLevel set mute 1 true")  # None
 ```
 
-### Error Handling
+**Raises:**
+- `ClientResponseError` – the device answered `-ERR ...` or with an unparseable line.
+- `ClientTimeoutError` – no response within `command_timeout` (the connection is marked lost).
+- `ClientConnectionError` – not connected.
 
-The Tesira connection handles various error conditions:
-
-#### Custom Exceptions
-
-- `ClientConnectionError`: Connection failures to Tesira device
-- `ClientTimeoutError`: Command timeouts
-- `ClientResponseError`: Invalid responses from Tesira device
-- `ClientError`: General client errors
-
-#### Error Handling Example
+#### update_state_and_command()
 
 ```python
-from errors import ClientConnectionError, ClientTimeoutError
-
-try:
-    await tesira_conn.set_level("OfficeSpeakersPCLevel", 1, 75)
-except ClientConnectionError:
-    print("Lost connection to Tesira device")
-    # Attempt to reconnect
-    await tesira_conn.open()
-except ClientTimeoutError:
-    print("Command timed out")
-    # Retry or handle gracefully
-except Exception as e:
-    print(f"Unexpected error: {e}")
+async def update_state_and_command(self, key: str, value: str) -> None
 ```
 
-### Connection Management
+Applies a value received on an MQTT `set` topic: `key` is the identifier (`<instance_tag>_<attribute>_<index>`) and the call sends `<instance_tag> set <attribute> <index> <value>`. The resulting `publishToken` update from the Tesira is what updates the stored state and MQTT, so the state always reflects what the device actually did.
 
-#### Automatic Reconnection
+**Raises:**
+- `ClientError` – `key` does not match any subscription.
+- Any error raised by `command()`.
 
-The connection automatically handles reconnection scenarios:
+#### get_min_max_levels()
 
 ```python
-async def ensure_connection(self) -> None:
-    """Ensure telnet connections are active."""
+async def get_min_max_levels(self, subscription: Subscription) -> dict[str, float]
 ```
 
-This method checks connection status and reconnects if necessary.
+Returns `{"min_level": float, "max_level": float}` for a level block using `get minLevel` / `get maxLevel`.
 
-#### Resubscription Management
-
-The connection automatically resubscribes to device attributes at regular intervals:
+#### process_tesira_response()
 
 ```python
-async def _resubscribe_all(self) -> None:
-    """Resubscribe to all active subscriptions."""
+async def process_tesira_response(self, response: str) -> None
 ```
 
-### Usage Examples
+Parses a `! "publishToken"` line, updates the stored state and publishes it. Normally invoked by the reader loop; exposed for tests and tooling.
 
-#### Complete Setup and Control Example
+## State store
+
+Every subscription is kept in an internal dictionary keyed by identifier. The entry is what `MqttConnection.publish_state()` receives:
+
+```python
+{
+    "instance_tag": "OfficeSpeakersPCLevel",
+    "attribute": "level",
+    "index": 1,
+    "state": -4.0,                  # bool for mute, float for level
+    "variable_type": "float",       # "bool" | "float"
+    "device_id": "03787145_OfficeSpeakersPCLevel",
+    "unique_id": "03787145_OfficeSpeakersPCLevel_level_1",
+    "name": "Level",
+    "device_name": "Office Speakers PC",
+    "identifier": "OfficeSpeakersPCLevel_level_1",
+    "min_level": -12.0,             # level only
+    "max_level": 12.0,              # level only
+}
+```
+
+## Error handling
+
+| Exception | Meaning |
+|-----------|---------|
+| `ClientError` | Base class; also raised for unknown MQTT identifiers. |
+| `ClientConnectionError` | Not connected, connection refused, or the device closed the session. |
+| `ClientTimeoutError` | Subclass of `ClientConnectionError`; connection, banner or command timed out. |
+| `ClientResponseError` | The device answered `-ERR`, or the reply could not be parsed/validated. |
+
+Failures to publish to MQTT from the reader loop are logged and do not affect the Tesira connection.
+
+## Usage example
 
 ```python
 import asyncio
-from models import TesiraConfig, Subscription
-from mqtt_connection import MqttConnection
+
+from models import Subscription, TesiraConfig
 from tesira import BiampTesiraConnection
 
-async def main():
-    # Configuration
-    tesira_config = TesiraConfig(
-        host="tesira.device.com",
-        port=23,
-        resubscription_time=300
+
+async def main(mqtt_conn):
+    tesira_conn = BiampTesiraConnection(
+        TesiraConfig(host="tesira.device.com", port=23, resubscription_time=300),
+        mqtt_conn,
     )
-
-    # MQTT connection (assuming mqtt_client is already set up)
-    mqtt_conn = MqttConnection(mqtt_client, "tesira2mqtt")
-
-    # Tesira connection
-    tesira_conn = BiampTesiraConnection(tesira_config, mqtt_conn)
-
-    try:
-        # Connect to Tesira device
-        await tesira_conn.open()
-        print(f"Connected to Tesira: {tesira_conn.serial_number}")
-
-        # Subscribe to device attributes
-        subscription = Subscription(
+    subscriptions = {
+        Subscription(
             instance_tag="OfficeSpeakersPCLevel",
             attribute="level",
             index=1,
             name="Level",
-            device_name="Office Speakers PC"
+            device_name="Office Speakers PC",
         )
-        await tesira_conn.subscribe(subscription)
+    }
 
-        # Get current state
-        current_level = await tesira_conn.get_level("OfficeSpeakersPCLevel", 1)
-        print(f"Current level: {current_level}%")
+    await tesira_conn.open()
+    print(f"Connected to Tesira {tesira_conn.serial_number}")
+    await tesira_conn.subscribe_all(subscriptions)
 
-        # Set new level
-        await tesira_conn.set_level("OfficeSpeakersPCLevel", 1, 80)
-        print("Level set to 80%")
+    # Change the level; the Tesira's publishToken update will flow to MQTT.
+    await tesira_conn.update_state_and_command("OfficeSpeakersPCLevel_level_1", "-6")
 
-        # Mute the device
-        await tesira_conn.set_mute("OfficeSpeakersPCLevel", 1, True)
-        print("Device muted")
-
-    except Exception as e:
-        print(f"Error: {e}")
+    # Keep the connection alive, reconnecting and resubscribing as needed.
+    barrier = asyncio.Barrier(1)
+    try:
+        await tesira_conn.run(barrier, subscriptions)
     finally:
         await tesira_conn.close()
-
-if __name__ == "__main__":
-    asyncio.run(main())
 ```
 
-#### Monitoring Multiple Devices
+## Testing
 
-```python
-async def monitor_multiple_devices(tesira_conn, subscriptions):
-    """Monitor multiple Tesira device attributes."""
-
-    # Subscribe to all devices
-    for subscription in subscriptions:
-        await tesira_conn.subscribe(subscription)
-
-    # Monitor state changes (this would typically be in a loop)
-    while True:
-        try:
-            # Check each device
-            for subscription in subscriptions:
-                if subscription.attribute == "level":
-                    level = await tesira_conn.get_level(
-                        subscription.instance_tag,
-                        subscription.index
-                    )
-                    print(f"{subscription.device_name} level: {level}%")
-                elif subscription.attribute == "mute":
-                    muted = await tesira_conn.get_mute(
-                        subscription.instance_tag,
-                        subscription.index
-                    )
-                    print(f"{subscription.device_name} muted: {muted}")
-
-            await asyncio.sleep(5)  # Check every 5 seconds
-
-        except Exception as e:
-            print(f"Monitoring error: {e}")
-            await asyncio.sleep(10)  # Wait before retrying
-```
-
-### Best Practices
-
-1. **Connection Management**: Always use try/finally blocks to ensure connections are closed
-2. **Error Handling**: Handle all connection and command errors gracefully
-3. **Resubscription**: Let the connection handle automatic resubscription
-4. **Serial Number**: Check serial number after connection to verify device identity
-5. **Command Validation**: Validate parameters before sending commands to Tesira device
+`tests/fake_tesira.py` contains a configurable fake Tesira TTP server that reproduces the real device's behaviour (option negotiation, delayed banner with terminal preamble, character-by-character echo, `CR LF`/`CR NUL` endings, `publishToken` before `+OK`, `ALREADY_SUBSCRIBED`, silent and dropped sessions). `tests/test_tesira.py` exercises this class against it; run the suite with `scripts/test`.
 
 ---
 
-**Last Updated**: September 2025
+**Last Updated**: September 2026
 **API Version**: 1.1.28

@@ -2,6 +2,9 @@
 
 target-version = "py312"
 
+# Source files import each other as top-level modules; tests do the same.
+src = [".", "src", "tests"]
+
 [lint]
 select = [
     "ALL",
@@ -14,6 +17,18 @@ ignore = [
     "D212", # multi-line-summary-first-line (incompatible with formatter)
     "COM812", # incompatible with formatter
     "ISC001", # incompatible with formatter
+]
+
+[lint.per-file-ignores]
+"tests/**" = [
+    "ANN", # test helpers do not need exhaustive annotations
+    "D", # docstrings are optional in tests
+    "FBT", # boolean positional values are fine for fake device state
+    "INP001", # tests are not a package
+    "PLR2004", # magic values are the point of assertions
+    "S101", # assert is how tests assert
+    "SLF001", # tests may inspect private state
+    "TC", # fixtures need their types at runtime for readability
 ]
 
 [lint.flake8-pytest-style]

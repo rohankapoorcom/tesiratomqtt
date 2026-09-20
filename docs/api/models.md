@@ -63,7 +63,9 @@ Configuration model for Biamp Tesira device connection settings.
 |-------|------|----------|-------------|
 | `host` | `str` | Yes | Tesira device hostname or IP address |
 | `port` | `int` | Yes | Tesira telnet port number |
-| `resubscription_time` | `int` | Yes | Resubscription interval in seconds |
+| `resubscription_time` | `float` | Yes | Seconds between refreshing all subscriptions on the device |
+| `command_timeout` | `float` | No (default `10.0`) | Seconds to wait for the device to answer a command (also used for connecting and waiting for the welcome banner). A timeout marks the connection as lost so it gets rebuilt. |
+| `heartbeat_interval` | `float` | No (default `60.0`) | Seconds between `DEVICE get serialNumber` heartbeats on the command session, used to detect a silently dead connection. `0` disables the heartbeat. |
 
 #### Example
 
@@ -73,14 +75,18 @@ from models import TesiraConfig
 tesira_config = TesiraConfig(
     host="tesira.device.com",
     port=23,
-    resubscription_time=300
+    resubscription_time=300,
+    command_timeout=10,
+    heartbeat_interval=60,
 )
 ```
 
 #### Validation
 
 - `port`: Must be a valid port number (1-65535)
-- `resubscription_time`: Must be a positive integer
+- `resubscription_time`: Must be a positive number
+- `command_timeout`: Must be a positive number
+- `heartbeat_interval`: Must be zero or a positive number
 - `host`: Must be a non-empty string
 
 ### Subscription
