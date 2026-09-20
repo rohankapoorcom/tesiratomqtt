@@ -1,12 +1,4 @@
-"""
-A fake Biamp Tesira Text Protocol server for tests.
-
-It reproduces the behaviours of a real Tesira telnet session that matter to the
-client: option negotiation, the delayed welcome banner with terminal preamble,
-echoing every command back character by character, CR LF or CR NUL line
-endings, subscription updates arriving before the ``+OK`` of the subscribe
-command, and ``-ERR ALREADY_SUBSCRIBED`` on repeated subscriptions.
-"""
+"""Fake Tesira TTP server reproducing the real device's telnet quirks."""
 
 from __future__ import annotations
 
@@ -37,7 +29,7 @@ def _format_value(value: Any) -> str:
 
 @dataclass
 class Block:
-    """State of one DSP block (index is ignored; only index 1 is modelled)."""
+    """One DSP block; channel index is ignored."""
 
     mute: bool = False
     level: float = -10.0
@@ -106,7 +98,7 @@ class Session:
         await self.send_line(BANNER)
 
     def _strip_iac(self) -> None:
-        """Move plain text out of ``_raw`` into ``_text``, dropping telnet commands."""
+        """Move text from ``_raw`` to ``_text``, dropping telnet commands."""
         raw = self._raw
         while raw:
             if raw[0] != IAC:
@@ -234,7 +226,7 @@ class Session:
 
 
 class FakeTesiraServer:
-    """Configurable fake Tesira listening on an ephemeral localhost port."""
+    """Fake Tesira on an ephemeral localhost port."""
 
     def __init__(self, blocks: dict[str, Block] | None = None) -> None:
         self.blocks: dict[str, Block] = blocks if blocks is not None else {}
@@ -298,12 +290,12 @@ class FakeTesiraServer:
                     await session.publish(label, value)
 
     async def push_update(self, tag: str, attribute: str, raw: str) -> None:
-        """Change a block value as if done from the Tesira UI and notify subscribers."""
+        """Change a block value and notify subscribers."""
         value = self.blocks[tag].set(attribute, raw)
         await self.notify(tag, attribute, value)
 
     async def push_raw(self, label: str, value: Any) -> None:
-        """Send a publishToken for an arbitrary label on every session."""
+        """Send a publishToken for any label on every session."""
         for session in self.open_sessions:
             await session.publish(label, value)
 

@@ -21,13 +21,9 @@ class TesiraConfig(BaseModel):
 
     host: str
     port: int
-    # Seconds between refreshing all subscriptions on the Tesira.
     resubscription_time: float
-    # Seconds to wait for the Tesira to answer a single command.
     command_timeout: float = 10.0
-    # Seconds between heartbeat commands used to detect a silently dead
-    # session. Set to 0 to disable.
-    heartbeat_interval: float = 60.0
+    heartbeat_interval: float = 60.0  # 0 disables
 
 
 class Subscription(BaseModel):

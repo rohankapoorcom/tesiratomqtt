@@ -204,10 +204,10 @@ Solution:
 **Problem**: Slow startup or slow response
 ```
 Solution:
-- Expect roughly six seconds at startup: the Tesira admits telnet sessions
-  one at a time and takes about three seconds each before it is ready
-- State changes are pushed by the Tesira immediately; resubscription_time
-  only refreshes subscriptions and does not affect update latency
+- Startup takes ~6 seconds: the Tesira sets up telnet sessions one at a
+  time at ~3 seconds each
+- resubscription_time does not affect update latency; changes are pushed
+  by the Tesira immediately
 - Check network latency to both MQTT broker and Tesira
 - Monitor log levels (avoid DEBUG in production)
 ```
@@ -215,10 +215,9 @@ Solution:
 **Problem**: `Unexpected serial number ... from Tesira` at startup
 ```
 Solution:
-- The device returned something other than a plain serial number to
-  DEVICE get serialNumber. Run the command in a telnet session to the
-  Tesira and check the reply; the serial is used in MQTT topics and must
-  only contain letters, digits, '_' and '-'
+- The reply to DEVICE get serialNumber was not a plain serial. Check it
+  in a telnet session; it is used in MQTT topics and may only contain
+  letters, digits, '_' and '-'
 ```
 
 ### Debug Mode
@@ -292,7 +291,7 @@ scripts/test
 
 ### Tests
 
-The test-suite (`tests/`) runs entirely offline against a fake Tesira TTP server (`tests/fake_tesira.py`) that reproduces the real device's telnet behaviour: option negotiation, the delayed welcome banner, command echo, `CR LF`/`CR NUL` line endings, subscription updates arriving before `+OK`, dropped and unresponsive sessions. Run it with `scripts/test` (or `python -m pytest`); pass any pytest arguments through, for example `scripts/test -k reconnect -v`.
+The tests run offline against a fake Tesira (`tests/fake_tesira.py`) that reproduces the device's telnet quirks. Run them with `scripts/test`; pytest arguments pass through (`scripts/test -k reconnect -v`).
 
 ### Code Structure
 
@@ -304,15 +303,15 @@ src/
 ├── models/              # Pydantic data models
 │   └── __init__.py      # Configuration models
 ├── mqtt_connection.py   # MQTT client management
-├── tesira.py            # Tesira device communication (sessions, reader loops, supervisor)
-├── telnet.py            # Line-oriented telnet wrapper
+├── tesira.py            # Tesira device communication
+├── telnet.py            # Telnet connection handling
 └── utils/               # Utility functions
     └── arguments.py      # Command line argument handling
 tests/
-├── conftest.py          # Fixtures (fake server, fake MQTT, configs)
-├── fake_tesira.py       # Fake Tesira TTP server used by the tests
-├── test_telnet.py       # Telnet wrapper tests
-└── test_tesira.py       # Tesira connection tests
+├── conftest.py          # Fixtures
+├── fake_tesira.py       # Fake Tesira TTP server
+├── test_telnet.py
+└── test_tesira.py
 ```
 
 ### Tesira Text Protocol Reference

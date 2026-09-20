@@ -25,18 +25,15 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
-# Subscription update, optionally with the "+OK" of the subscribe command folded
-# onto the same line (Biamp documents both shapes).
+# The "+OK" of a subscribe command is sometimes folded onto the update line.
 _PUBLISH_TOKEN_RE = re.compile(
     r'^! "publishToken":"(?P<token>[^"]*)" "value":(?P<value>.*?)(?P<ok> \+OK)?$'
 )
-# Successful command, optionally carrying a value: `+OK` or `+OK "value":<x>`.
 _OK_RE = re.compile(r'^\+OK(?: "value":(?P<value>.*))?$')
 _ERR_PREFIX = "-ERR"
 _ALREADY_SUBSCRIBED = "ALREADY_SUBSCRIBED"
 
-# The serial number ends up in MQTT topics and Home Assistant object ids, which
-# only allow this character set. Anything else means we parsed the wrong line.
+# Used in MQTT topics and Home Assistant object ids, which only allow these.
 _SERIAL_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 _TYPE_ADAPTERS: dict[str, TypeAdapter] = {
@@ -51,7 +48,7 @@ _RECONNECT_BACKOFF_MAX = 60.0
 
 @dataclass
 class _Channel:
-    """A single telnet session plus the bookkeeping for its in-flight command."""
+    """A telnet session and its in-flight command."""
 
     name: str
     telnet: BiampTesiraTelnetConnection | None = None
@@ -61,7 +58,7 @@ class _Channel:
 
     @property
     def connected(self) -> bool:
-        """Return whether the underlying telnet session is usable."""
+        """Return whether the session is usable."""
         return self.telnet is not None and not self.telnet.closed
 
     def fail_pending(self, error: Exception) -> None:
@@ -70,7 +67,7 @@ class _Channel:
             self.pending.set_exception(error)
 
     def resolve_pending(self, response: str) -> bool:
-        """Hand a response line to the in-flight command; return whether one existed."""
+        """Resolve the in-flight command; return False if there was none."""
         if self.pending is not None and not self.pending.done():
             self.pending.set_result(response)
             return True
@@ -78,7 +75,7 @@ class _Channel:
 
 
 def _unquote(value: str) -> str:
-    """Strip one pair of surrounding double quotes, if present."""
+    """Strip surrounding double quotes."""
     if len(value) >= 2 and value[0] == value[-1] == '"':  # noqa: PLR2004
         return value[1:-1]
     return value
@@ -86,14 +83,12 @@ def _unquote(value: str) -> str:
 
 class BiampTesiraConnection:
     """
-    BiampTesiraConnection used for communication with Biamp Tesira DSPs.
+    Communication with a Biamp Tesira DSP over two telnet sessions.
 
-    Two telnet sessions are used: one carries subscriptions (and therefore the
-    asynchronous ``! "publishToken"`` updates), the other carries commands. Each
-    session has a background reader task which classifies every incoming line:
-    subscription updates go to the state store, ``+OK``/``-ERR`` lines resolve
-    the command currently awaiting a response, and everything else (the Tesira
-    echoes every command back through a terminal layer) is ignored.
+    One session carries subscriptions (and their ``publishToken`` updates), the
+    other carries commands. A reader task per session routes updates to the state
+    store, ``+OK``/``-ERR`` lines to the pending command, and ignores the rest
+    (the Tesira echoes every command back).
     """
 
     def __init__(self, tesira: TesiraConfig, mqtt: MqttConnection) -> None:
@@ -110,22 +105,20 @@ class BiampTesiraConnection:
 
     @property
     def serial_number(self) -> str | None:
-        """Return the serial number of the connected Tesira, if known."""
+        """Return the Tesira serial number once connected."""
         return self._serial_number
 
     @property
     def connected(self) -> bool:
-        """Return whether both telnet sessions are usable."""
+        """Return whether both sessions are usable."""
         return (
             self._subscription_channel.connected
             and self._command_channel.connected
             and not self._connection_lost.is_set()
         )
 
-    # ------------------------------------------------------------------ lifecycle
-
     async def open(self) -> None:
-        """Open both telnet sessions, start their readers and verify the device."""
+        """Open both sessions and read the serial number."""
         _LOGGER.info(
             "Connecting to Tesira at %s:%s", self._tesira.host, self._tesira.port
         )
@@ -187,18 +180,17 @@ class BiampTesiraConnection:
         )
 
     async def close(self) -> None:
-        """Close all telnet connections and stop background tasks."""
+        """Close the sessions and stop background tasks."""
         self._closing = True
         await self._teardown()
 
     async def wait_closed(self) -> None:
-        """Return once the connection to the Tesira has been lost or closed."""
+        """Wait until the connection is lost or closed."""
         await self._connection_lost.wait()
 
     async def _teardown(self) -> None:
-        """Stop background tasks and close the sessions, failing in-flight commands."""
-        # Mark the connection as gone first so the readers we are about to cancel
-        # do not report a "lost" connection that we are closing on purpose.
+        """Stop tasks, close sessions and fail in-flight commands."""
+        # Set first so the cancelled readers do not log a "lost" connection.
         self._connection_lost.set()
 
         if self._heartbeat_task is not None:
@@ -221,7 +213,7 @@ class BiampTesiraConnection:
             channel.fail_pending(ClientConnectionError("Client not connected."))
 
     def _on_connection_lost(self, channel: _Channel, reason: str) -> None:
-        """Record that a session is no longer usable and wake anyone waiting on it."""
+        """Mark the connection lost and fail in-flight commands."""
         if not self._connection_lost.is_set():
             _LOGGER.warning("%s - Tesira connection lost: %s", channel.name, reason)
         error = ClientConnectionError(f"{channel.name} - connection lost: {reason}")
@@ -232,13 +224,7 @@ class BiampTesiraConnection:
     async def run(
         self, barrier: asyncio.Barrier, subscriptions: set[Subscription]
     ) -> None:
-        """
-        Supervise the connection until cancelled.
-
-        Reconnects (with exponential backoff) and resubscribes whenever the
-        connection is lost, and refreshes all subscriptions every
-        ``resubscription_time`` seconds while connected.
-        """
+        """Reconnect and resubscribe on loss; refresh subscriptions on schedule."""
         _LOGGER.info("Starting Tesira supervisor loop")
         await barrier.wait()
         backoff = _RECONNECT_BACKOFF_INITIAL
@@ -273,10 +259,8 @@ class BiampTesiraConnection:
                 _LOGGER.warning("Tesira connection lost; reconnecting")
                 await self._teardown()
 
-    # ---------------------------------------------------------------- background
-
     async def _reader_loop(self, channel: _Channel) -> None:
-        """Read lines from one session forever and dispatch them."""
+        """Dispatch every line from one session."""
         telnet = channel.telnet
         if telnet is None:
             return
@@ -297,7 +281,7 @@ class BiampTesiraConnection:
             self._on_connection_lost(channel, reason)
 
     async def _handle_line(self, channel: _Channel, line: str) -> None:
-        """Classify one line from the Tesira and act on it."""
+        """Route a line to the state store or the pending command."""
         if not line:
             return
 
@@ -313,12 +297,10 @@ class BiampTesiraConnection:
                 _LOGGER.debug("%s - Unsolicited response: %s", channel.name, line)
             return
 
-        # Anything else is the Tesira echoing our own command back (possibly
-        # wrapped or repeated by its terminal layer) and carries no information.
-        _LOGGER.debug("%s - Ignoring line: %s", channel.name, line)
+        _LOGGER.debug("%s - Ignoring echo: %s", channel.name, line)
 
     async def _heartbeat_loop(self) -> None:
-        """Periodically prove the command session is alive."""
+        """Detect a silently dead session."""
         while True:
             await asyncio.sleep(self._tesira.heartbeat_interval)
             try:
@@ -329,10 +311,8 @@ class BiampTesiraConnection:
                 )
                 return
 
-    # ------------------------------------------------------------------ commands
-
     async def _request(self, channel: _Channel, command: str) -> str:
-        """Send a command on a session and return the raw ``+OK``/``-ERR`` line."""
+        """Send a command and return its ``+OK``/``-ERR`` line."""
         async with channel.lock:
             telnet = channel.telnet
             if telnet is None or telnet.closed or self._connection_lost.is_set():
@@ -346,8 +326,7 @@ class BiampTesiraConnection:
                 await telnet.write(command)
                 return await asyncio.wait_for(future, self._tesira.command_timeout)
             except TimeoutError as err:
-                # A late reply would otherwise be attributed to the next command,
-                # so treat an unresponsive session as dead.
+                # Otherwise a late reply would be attributed to the next command.
                 self._on_connection_lost(channel, f"no response to {command!r}")
                 msg = f"Timeout waiting for a response to {command!r}"
                 raise ClientTimeoutError(msg) from err
@@ -356,7 +335,7 @@ class BiampTesiraConnection:
 
     @staticmethod
     def _parse_response(response: str) -> str | None:
-        """Turn a raw response line into its value (or None for a bare ``+OK``)."""
+        """Return the value from a response line, or None for a bare ``+OK``."""
         if response.startswith(_ERR_PREFIX):
             raise ClientResponseError(response)
         match = _OK_RE.match(response)
@@ -396,16 +375,8 @@ class BiampTesiraConnection:
                 raise ClientResponseError(msg) from err
         return levels
 
-    # ------------------------------------------------------------- subscriptions
-
     async def subscribe_all(self, subscriptions: set[Subscription]) -> None:
-        """
-        Create (or refresh) all of the Tesira subscriptions.
-
-        Subscriptions the Tesira rejects (for example a mistyped instance tag)
-        are logged and skipped so one bad entry does not take the rest down;
-        connection problems propagate to the caller.
-        """
+        """Create or refresh all subscriptions; rejected ones are logged and skipped."""
         _LOGGER.info("Subscribing to Tesira")
         failed = 0
         for subscription in subscriptions:
@@ -421,7 +392,7 @@ class BiampTesiraConnection:
         )
 
     async def subscribe(self, subscription: Subscription) -> None:
-        """Create a single Tesira subscription and publish its initial state."""
+        """Create a subscription and publish its current value."""
         if not self._subscription_channel.connected:
             msg = "Client not connected."
             raise ClientConnectionError(msg)
@@ -455,8 +426,7 @@ class BiampTesiraConnection:
             raise
 
         if self._subscriptions[identifier]["state"] is None:
-            # The Tesira reports the current value when a subscription is
-            # created; if that did not happen (already subscribed), ask for it.
+            # No initial publishToken (already subscribed): fetch the value.
             value = await self.command(
                 f"{subscription.instance_tag} get {subscription.attribute} "
                 f"{subscription.index}"
@@ -466,7 +436,7 @@ class BiampTesiraConnection:
     async def _build_entry(
         self, subscription: Subscription, identifier: str
     ) -> dict[str, Any]:
-        """Assemble the state-store entry for a subscription (state not yet known)."""
+        """Build the state-store entry for a subscription."""
         other_items: dict[str, float] = {}
         match subscription.attribute:
             case "mute":
@@ -491,15 +461,8 @@ class BiampTesiraConnection:
             **other_items,
         }
 
-    async def process_tesira_response(self, response: str) -> None:
-        """Process a ``! "publishToken"`` line from the Tesira."""
-        match = _PUBLISH_TOKEN_RE.match(response.strip())
-        if match is None:
-            return
-        await self._apply_state(match.group("token"), match.group("value"))
-
     async def _apply_state(self, identifier: str, raw_value: str) -> None:
-        """Store a new value for a subscription and publish it to MQTT."""
+        """Store a new value and publish it."""
         entry = self._subscriptions.get(identifier)
         if entry is None:
             _LOGGER.warning("Received update for unknown subscription %s", identifier)

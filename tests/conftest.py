@@ -1,4 +1,4 @@
-"""Shared fixtures for the Tesira2MQTT test-suite."""
+"""Shared fixtures."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from tesira import BiampTesiraConnection
 
 
 class FakeMqtt:
-    """Stand-in for MqttConnection that records every published state."""
+    """Records published states."""
 
     def __init__(self) -> None:
         self.published: list[tuple[str, dict[str, Any], str | None]] = []
@@ -39,7 +39,7 @@ class FakeMqtt:
 async def wait_until(
     predicate: Callable[[], bool], deadline_seconds: float = 2.0, interval: float = 0.01
 ) -> None:
-    """Poll ``predicate`` until it is true or ``deadline_seconds`` elapse."""
+    """Poll until ``predicate`` is true."""
     loop = asyncio.get_running_loop()
     deadline = loop.time() + deadline_seconds
     while not predicate():

@@ -1,4 +1,4 @@
-"""Tests for the Tesira Text Protocol connection against the fake Tesira."""
+"""Tests for BiampTesiraConnection against the fake Tesira."""
 
 from __future__ import annotations
 
@@ -24,8 +24,6 @@ if TYPE_CHECKING:
 
 pytestmark = pytest.mark.usefixtures("server")
 
-# ------------------------------------------------------------------ connecting
-
 
 async def test_open_reads_serial_quickly(
     connection: BiampTesiraConnection, server: FakeTesiraServer
@@ -37,8 +35,6 @@ async def test_open_reads_serial_quickly(
     assert connection.serial_number == "03787145"
     assert connection.connected
     assert len(server.open_sessions) == 2
-    # Both sessions are opened concurrently and nothing sleeps: well under the
-    # ~7 seconds the previous implementation needed.
     assert elapsed < 1.0
 
 
@@ -99,9 +95,6 @@ async def test_open_fails_cleanly_when_banner_never_arrives(
     assert not connection.connected
 
 
-# ---------------------------------------------------------------- subscribing
-
-
 async def test_subscribe_all_publishes_state_and_discovery_data(
     connection: BiampTesiraConnection, server: FakeTesiraServer, mqtt: FakeMqtt
 ) -> None:
@@ -110,7 +103,7 @@ async def test_subscribe_all_publishes_state_and_discovery_data(
     await connection.subscribe_all(ALL_SUBS)
     elapsed = time.monotonic() - started
 
-    assert elapsed < 1.0  # previously ~2 s per mute and ~4 s per level
+    assert elapsed < 1.0
 
     by_id = {d["identifier"]: d for _, d, _ in mqtt.published}
     assert set(by_id) == {"Mic1_mute_1", "Lvl1_level_1", "Lvl1_mute_1"}
@@ -163,8 +156,6 @@ async def test_publish_token_interleaved_with_pending_command(
     await connection.open()
     await connection.subscribe(MUTE_SUB)
 
-    # While the subscribe for Lvl1 is in flight the Tesira emits an update for
-    # Mic1 before answering +OK. Both must be handled correctly.
     server.interleave_before_ok = ("Mic1_mute_1", True)
     await connection.subscribe(LEVEL_SUB)
 
@@ -212,7 +203,6 @@ async def test_unknown_publish_token_is_ignored(
     count = len(mqtt.published)
 
     await server.push_raw("SomethingElse_mute_1", True)
-    # The reader must stay alive and keep serving commands.
     assert await connection.command("Mic1 get mute 1") == "false"
     assert len(mqtt.published) == count
 
@@ -228,9 +218,6 @@ async def test_mqtt_failure_does_not_kill_reader(
     await wait_until(lambda: connection._subscriptions["Mic1_mute_1"]["state"] is True)
     assert connection.connected
     assert await connection.command("DEVICE get serialNumber") == "03787145"
-
-
-# ------------------------------------------------------------------- commands
 
 
 async def test_command_parsing(connection: BiampTesiraConnection) -> None:
@@ -287,9 +274,6 @@ async def test_command_timeout_marks_connection_lost(
     assert not connection.connected
 
 
-# ------------------------------------------------------- connection lifecycle
-
-
 async def test_peer_disconnect_is_detected(
     connection: BiampTesiraConnection, server: FakeTesiraServer
 ) -> None:
@@ -341,9 +325,6 @@ async def test_reopen_after_close(
     assert mqtt.states_for("Mic1_mute_1") == [False, False]
 
 
-# ----------------------------------------------------------------- supervisor
-
-
 async def test_run_reconnects_and_resubscribes_after_loss(
     connection: BiampTesiraConnection, server: FakeTesiraServer, mqtt: FakeMqtt
 ) -> None:
@@ -363,7 +344,6 @@ async def test_run_reconnects_and_resubscribes_after_loss(
         )
         assert len(server.open_sessions) == 2
 
-        # Updates flow again over the new session.
         await server.push_update("Mic1", "mute", "true")
         await wait_until(lambda: mqtt.last_state("Mic1_mute_1") is True)
     finally:
@@ -386,7 +366,6 @@ async def test_run_retries_with_backoff_while_tesira_is_down(
         server.banner_delay = 10
         server.drop_all_sessions()
 
-        # The supervisor keeps trying instead of raising out.
         await asyncio.sleep(0.6)
         assert not task.done()
         assert not connection.connected

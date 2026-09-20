@@ -17,29 +17,20 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
-# The Tesira sends this once telnet negotiation is complete. Anything before it
-# (for example "No entry for terminal type ...") is terminal noise to be ignored.
 BANNER = "Welcome to the Tesira Text Protocol Server"
 
-# The Tesira wraps echoed input at the negotiated terminal width; a very wide
-# terminal keeps long subscribe commands on a single line.
+# Wide enough that the Tesira never wraps echoed commands.
 _TERMINAL_COLS = 1310
 _TERMINAL_ROWS = 125
 
 
 class BiampTesiraTelnetConnection:
-    """
-    Telnet client used for communications.
-
-    This is a thin line-oriented wrapper over telnetlib3. It knows nothing about
-    the Tesira Text Protocol itself other than how to wait for the welcome
-    banner; classifying lines is the caller's job.
-    """
+    """Line-oriented telnet session to a Tesira."""
 
     def __init__(
         self, reader: TelnetReader, writer: TelnetWriter, identifier: str
     ) -> None:
-        """Wrap an established telnetlib3 reader/writer pair."""
+        """Wrap a telnetlib3 reader/writer pair."""
         self.reader: TelnetReader | None = reader
         self.writer: TelnetWriter | None = writer
         self.identifier = identifier
@@ -48,20 +39,7 @@ class BiampTesiraTelnetConnection:
     async def connect(
         cls, host: str, port: int, identifier: str, timeout_seconds: float
     ) -> BiampTesiraTelnetConnection:
-        """
-        Open a telnet session and wait for the Tesira welcome banner.
-
-        Args:
-            host: Tesira host name or IP address.
-            port: Telnet port (normally 23).
-            identifier: Name used in log messages to tell sessions apart.
-            timeout_seconds: Maximum seconds to wait for the connection and the banner.
-
-        Raises:
-            ClientTimeoutError: The connection or the banner took too long.
-            ClientConnectionError: The connection could not be established.
-
-        """
+        """Connect and wait for the welcome banner."""
         try:
             reader, writer = await asyncio.wait_for(
                 telnetlib3.open_connection(
@@ -99,7 +77,7 @@ class BiampTesiraTelnetConnection:
         return connection
 
     def _enable_tcp_keepalive(self) -> None:
-        """Ask the kernel to probe idle connections so dead peers are noticed."""
+        """Enable TCP keepalive so dead peers are noticed."""
         if self.writer is None:
             return
         sock = self.writer.transport.get_extra_info("socket")
@@ -119,7 +97,7 @@ class BiampTesiraTelnetConnection:
             _LOGGER.debug("%s - Unable to enable TCP keepalive", self.identifier)
 
     async def _wait_for_banner(self) -> None:
-        """Consume lines until the welcome banner has been seen."""
+        """Skip the terminal preamble up to and including the banner."""
         while True:
             line = await self.readline()
             if BANNER in line:
@@ -138,13 +116,7 @@ class BiampTesiraTelnetConnection:
         return self.writer is None or self.writer.is_closing()
 
     async def write(self, command: str) -> None:
-        """
-        Send a command terminated with CR LF.
-
-        Args:
-            command: The command to send.
-
-        """
+        """Send a command."""
         if self.writer is None or self.writer.is_closing():
             msg = "Client not connected."
             raise ClientConnectionError(msg)
@@ -156,19 +128,7 @@ class BiampTesiraTelnetConnection:
             raise ClientConnectionError from err
 
     async def readline(self) -> str:
-        """
-        Read one line from the Tesira.
-
-        The Tesira terminates lines with either CR LF or CR NUL. telnetlib3
-        yields at any of those (and at a lone CR when the LF has not arrived
-        yet, in which case the following LF shows up as an empty line). All
-        terminators and NUL padding are stripped, so callers only ever see the
-        textual content of a line, possibly empty.
-
-        Raises:
-            ClientConnectionError: The connection was closed by the peer.
-
-        """
+        """Read one line, stripped of its CR LF or CR NUL terminator."""
         reader = self.reader
         if reader is None or self.closed:
             msg = "Client not connected."

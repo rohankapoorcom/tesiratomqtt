@@ -116,7 +116,6 @@ async def listen_to_incoming_mqtt_messages(
         try:
             await tesira_connection.update_state_and_command(parts[1], decoded_payload)
         except ClientError as err:
-            # A rejected or undeliverable command must not take the bridge down.
             _LOGGER.warning(
                 "Failed to apply %s to %s: %s", decoded_payload, parts[1], err
             )
@@ -154,8 +153,6 @@ async def async_main() -> None:
 
             barrier = asyncio.Barrier(3)
             tasks = []
-            # Reads both Tesira sessions, reconnects/resubscribes on loss and
-            # refreshes subscriptions on the configured schedule.
             tasks.append(
                 tg.create_task(tesira_connection.run(barrier, config.subscriptions))
             )

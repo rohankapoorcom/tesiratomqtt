@@ -2,203 +2,103 @@
 
 ## Overview
 
-The `BiampTesiraConnection` class (`src/tesira.py`) manages communication with a Biamp Tesira DSP over telnet using the **Tesira Text Protocol (TTP)**. It owns the telnet sessions, creates and refreshes subscriptions, executes commands, keeps the current state of every subscribed control, and hands state changes to the MQTT layer.
+`BiampTesiraConnection` (`src/tesira.py`) talks to a Biamp Tesira DSP over telnet using the [Tesira Text Protocol](https://support.biamp.com/Tesira/Control/Tesira_Text_Protocol) (TTP). It owns the telnet sessions, manages subscriptions, executes commands, tracks the state of every subscribed control and hands changes to the MQTT layer.
 
-For the protocol itself, refer to the official Biamp documentation:
+See also: [Telnet session negotiation in Tesira](https://support.biamp.com/Tesira/Control/Telnet_session_negotiation_in_Tesira).
 
-- [Tesira Text Protocol](https://support.biamp.com/Tesira/Control/Tesira_Text_Protocol)
-- [Telnet session negotiation in Tesira](https://support.biamp.com/Tesira/Control/Telnet_session_negotiation_in_Tesira)
+## How it works
 
-## How the connection works
+Two telnet sessions are opened concurrently:
 
-### Two sessions
+- **subscription session** – `subscribe` commands and the resulting `! "publishToken"` updates.
+- **command session** – `get`/`set` commands and the heartbeat.
 
-Two telnet sessions are opened to the device, concurrently:
+Subscriptions are session-scoped, so they are re-created after a reconnect and refreshed every `resubscription_time` seconds as a safety net.
 
-- **subscription session** – carries every `subscribe` command and therefore receives the asynchronous `! "publishToken"` updates the Tesira sends whenever a subscribed value changes.
-- **command session** – carries `get` and `set` commands (including the ones triggered from MQTT) and the periodic heartbeat.
+The Tesira takes about three seconds per session before sending its welcome banner, and sets sessions up one at a time, so `open()` takes roughly six seconds.
 
-TTP subscriptions are session-scoped: if a session drops, every subscription made on it is gone and has to be re-created. This is why the connection re-subscribes after a reconnect and, as a safety net, on a fixed schedule (`resubscription_time`).
+Each session has a reader task that classifies every line:
 
-The Tesira accepts new sessions one at a time and takes roughly three seconds per session before it sends the `Welcome to the Tesira Text Protocol Server` banner, so opening the connection takes about six seconds regardless of how fast the network is.
+| Line | Handling |
+|------|----------|
+| `! "publishToken":"<label>" "value":<value>` | Store and publish the value. A trailing ` +OK` also resolves the pending command. |
+| `+OK` / `+OK "value":<value>` / `-ERR ...` | Response to the command in flight on that session. |
+| anything else | Ignored (command echo, blank lines, terminal preamble). |
 
-### Reader loop and line classification
+Commands are serialised per session with a lock and each awaits its own `+OK`/`-ERR`. A command that gets no response within `command_timeout` marks the connection lost, since a late reply would otherwise be matched to the next command.
 
-Each session has a background reader task that reads one line at a time and classifies it:
-
-| Line looks like | Handled as |
-|-----------------|------------|
-| `! "publishToken":"<label>" "value":<value>` | Subscription update: the value is stored and published to MQTT. A trailing ` +OK` (the Tesira sometimes folds the subscribe acknowledgement onto this line) also resolves the pending command. |
-| `+OK` or `+OK "value":<value>` | Success response for the command currently in flight on that session. |
-| `-ERR ...` | Error response for the command currently in flight on that session. |
-| anything else | Ignored. The Tesira echoes every command back through a terminal layer, sometimes wrapped or repeated; blank lines and terminal preamble also fall in here. |
-
-Because every command awaits its own `+OK`/`-ERR` line, nothing depends on timing, sleeps or on the echo arriving in a particular shape. Commands on a session are serialised with a lock so responses can never be attributed to the wrong request. If a command receives no response within `command_timeout` seconds the session is considered dead (a late reply would otherwise be mistaken for the next command's response) and the connection is torn down for the supervisor to rebuild.
-
-### Line endings
-
-The Tesira terminates lines with either `CR LF` or `CR NUL`; both are handled transparently by `src/telnet.py`.
+Both `CR LF` and `CR NUL` line endings are handled by `src/telnet.py`.
 
 ## Class: BiampTesiraConnection
-
-```python
-class BiampTesiraConnection:
-    """BiampTesiraConnection used for communication with Biamp Tesira DSPs."""
-```
-
-### Constructor
 
 ```python
 def __init__(self, tesira: TesiraConfig, mqtt: MqttConnection) -> None
 ```
 
-**Parameters:**
-- `tesira` (`TesiraConfig`): host, port, `resubscription_time`, `command_timeout`, `heartbeat_interval`.
-- `mqtt` (`MqttConnection`): used to publish state (and, on first sight of a control, its Home Assistant discovery message) via `publish_state()`.
-
-Constructing the object does not open any network connection.
+Constructing the object does not open a connection.
 
 ### Properties
 
-#### serial_number
+- `serial_number: str | None` – from `DEVICE get serialNumber`; `None` until `open()` succeeds. Must match `^[A-Za-z0-9_-]+$` (it is used in MQTT topics and `unique_id`s), otherwise `open()` raises `ClientResponseError`.
+- `connected: bool` – both sessions open and no loss detected.
 
-```python
-@property
-def serial_number(self) -> str | None
-```
-
-Serial number reported by the device via `DEVICE get serialNumber`, or `None` until `open()` has succeeded. The serial is validated against `^[A-Za-z0-9_-]+$` because it becomes part of every MQTT `unique_id` and Home Assistant discovery topic; `open()` raises `ClientResponseError` if the device returns anything else.
-
-#### connected
-
-```python
-@property
-def connected(self) -> bool
-```
-
-`True` while both sessions are open and no connection loss has been detected.
-
-### Lifecycle methods
+### Lifecycle
 
 #### open()
 
-```python
-async def open(self) -> None
-```
+Opens both sessions, starts the readers, reads and validates the serial number and starts the heartbeat (if `heartbeat_interval > 0`). Existing sessions are closed first, so it can be used to reconnect.
 
-Opens both sessions concurrently, waits for the welcome banner on each, starts the reader tasks, reads and validates the serial number and starts the heartbeat (if `heartbeat_interval > 0`). Any previously open sessions are closed first, so `open()` can be used to reconnect.
-
-**Raises:**
-- `ClientConnectionError` – connection refused / reset, or the device closed the session.
-- `ClientTimeoutError` – connection, banner or serial number took longer than `command_timeout`.
-- `ClientResponseError` – the device answered with `-ERR` or an invalid serial number.
+Raises `ClientConnectionError`, `ClientTimeoutError` or `ClientResponseError`.
 
 #### close()
 
-```python
-async def close(self) -> None
-```
-
-Stops the heartbeat and reader tasks, closes both sessions and fails any command still in flight with `ClientConnectionError`. Also stops `run()` if it is active.
+Stops background tasks, closes both sessions and fails in-flight commands with `ClientConnectionError`. Also stops `run()`.
 
 #### wait_closed()
 
-```python
-async def wait_closed(self) -> None
-```
+Returns once the connection has been lost or closed.
 
-Returns once the connection has been lost (peer disconnect, read error, heartbeat or command timeout) or closed. Useful for supervisors that want to react to connection loss.
+#### run(barrier, subscriptions)
 
-#### run()
+Supervises the connection until cancelled: opens and subscribes (with exponential backoff, 1 s to 60 s, while the device is unavailable), reconnects on loss, and calls `subscribe_all()` every `resubscription_time` seconds. The entry point runs this as a long-lived task.
 
-```python
-async def run(self, barrier: asyncio.Barrier, subscriptions: set[Subscription]) -> None
-```
+### Subscriptions
 
-Supervises the connection until cancelled. After `barrier.wait()`:
+#### subscribe(subscription)
 
-- If not connected, calls `open()` and `subscribe_all()`, retrying with exponential backoff (1 s doubling up to 60 s) while the device is unavailable.
-- While connected, waits for either a connection loss (then tears down and reconnects) or `resubscription_time` seconds elapsing (then calls `subscribe_all()` again to refresh the subscriptions).
+Sends `<instance_tag> subscribe <attribute> <index> <label>` with label `<instance_tag>_<attribute>_<index>` (also the MQTT identifier). For `level`, `minLevel`/`maxLevel` are fetched first. The initial `publishToken` reply is stored and published; `-ERR ALREADY_SUBSCRIBED` is treated as success and the value is fetched with `get` instead.
 
-The application entry point runs this as a long-lived task next to the MQTT message loop.
+Raises `ClientResponseError` if the device rejects the subscription, or a connection error.
 
-### Subscription methods
+#### subscribe_all(subscriptions)
 
-#### subscribe()
+Calls `subscribe()` for each entry. Rejected subscriptions are logged and skipped; connection errors propagate.
 
-```python
-async def subscribe(self, subscription: Subscription) -> None
-```
+### Commands
 
-Sends `<instance_tag> subscribe <attribute> <index> <label>` on the subscription session, where the label is `<instance_tag>_<attribute>_<index>` and doubles as the MQTT identifier. For `level` subscriptions the block's `minLevel`/`maxLevel` are fetched first (needed for the Home Assistant `number` entity).
+#### command(command) -> str | None
 
-The Tesira replies with the current value as a `publishToken` line followed by `+OK`; the value is stored and published. `-ERR ALREADY_SUBSCRIBED` is treated as success (the subscription is still active from an earlier call). If no initial value arrives, the current value is fetched with a `get`.
-
-**Raises:**
-- `ClientResponseError` – the device rejected the subscription (typically a wrong instance tag or index).
-- `ClientConnectionError` / `ClientTimeoutError` – session problems.
-
-#### subscribe_all()
+Sends a TTP command on the command session. Returns the value from `+OK "value":<value>` (unquoted) or `None` for a bare `+OK`.
 
 ```python
-async def subscribe_all(self, subscriptions: set[Subscription]) -> None
+await tesira_conn.command("DEVICE get serialNumber")               # '03787145'
+await tesira_conn.command("OfficeSpeakersPCLevel get level 1")     # '-4.000000'
+await tesira_conn.command("OfficeSpeakersPCLevel set mute 1 true") # None
 ```
 
-Calls `subscribe()` for every entry. Rejected subscriptions are logged and skipped so one mistyped instance tag does not prevent the others from working; connection errors propagate.
+Raises `ClientResponseError` on `-ERR` or an unparseable reply, `ClientTimeoutError` on no response, `ClientConnectionError` when not connected.
 
-### Command methods
+#### update_state_and_command(key, value)
 
-#### command()
+Sends `<instance_tag> set <attribute> <index> <value>` for the subscription identified by `key`. State is updated by the resulting `publishToken`, so it always reflects what the device did. Raises `ClientError` for an unknown key.
 
-```python
-async def command(self, command: str) -> str | None
-```
+#### get_min_max_levels(subscription) -> dict[str, float]
 
-Sends an arbitrary TTP command on the command session and returns the value from `+OK "value":<value>` (surrounding quotes removed), or `None` for a bare `+OK`.
-
-**Example:**
-```python
-serial = await tesira_conn.command("DEVICE get serialNumber")   # '03787145'
-level = await tesira_conn.command("OfficeSpeakersPCLevel get level 1")  # '-4.000000'
-await tesira_conn.command("OfficeSpeakersPCLevel set mute 1 true")  # None
-```
-
-**Raises:**
-- `ClientResponseError` – the device answered `-ERR ...` or with an unparseable line.
-- `ClientTimeoutError` – no response within `command_timeout` (the connection is marked lost).
-- `ClientConnectionError` – not connected.
-
-#### update_state_and_command()
-
-```python
-async def update_state_and_command(self, key: str, value: str) -> None
-```
-
-Applies a value received on an MQTT `set` topic: `key` is the identifier (`<instance_tag>_<attribute>_<index>`) and the call sends `<instance_tag> set <attribute> <index> <value>`. The resulting `publishToken` update from the Tesira is what updates the stored state and MQTT, so the state always reflects what the device actually did.
-
-**Raises:**
-- `ClientError` – `key` does not match any subscription.
-- Any error raised by `command()`.
-
-#### get_min_max_levels()
-
-```python
-async def get_min_max_levels(self, subscription: Subscription) -> dict[str, float]
-```
-
-Returns `{"min_level": float, "max_level": float}` for a level block using `get minLevel` / `get maxLevel`.
-
-#### process_tesira_response()
-
-```python
-async def process_tesira_response(self, response: str) -> None
-```
-
-Parses a `! "publishToken"` line, updates the stored state and publishes it. Normally invoked by the reader loop; exposed for tests and tooling.
+Returns `{"min_level": ..., "max_level": ...}` for a level block.
 
 ## State store
 
-Every subscription is kept in an internal dictionary keyed by identifier. The entry is what `MqttConnection.publish_state()` receives:
+Each subscription entry, as passed to `MqttConnection.publish_state()`:
 
 ```python
 {
@@ -206,7 +106,7 @@ Every subscription is kept in an internal dictionary keyed by identifier. The en
     "attribute": "level",
     "index": 1,
     "state": -4.0,                  # bool for mute, float for level
-    "variable_type": "float",       # "bool" | "float"
+    "variable_type": "float",
     "device_id": "03787145_OfficeSpeakersPCLevel",
     "unique_id": "03787145_OfficeSpeakersPCLevel_level_1",
     "name": "Level",
@@ -217,18 +117,18 @@ Every subscription is kept in an internal dictionary keyed by identifier. The en
 }
 ```
 
-## Error handling
+## Errors
 
 | Exception | Meaning |
 |-----------|---------|
-| `ClientError` | Base class; also raised for unknown MQTT identifiers. |
-| `ClientConnectionError` | Not connected, connection refused, or the device closed the session. |
-| `ClientTimeoutError` | Subclass of `ClientConnectionError`; connection, banner or command timed out. |
-| `ClientResponseError` | The device answered `-ERR`, or the reply could not be parsed/validated. |
+| `ClientError` | Base class; also unknown MQTT identifier. |
+| `ClientConnectionError` | Not connected, refused, or closed by the device. |
+| `ClientTimeoutError` | Connection, banner or command timed out. |
+| `ClientResponseError` | `-ERR`, or a reply that could not be parsed. |
 
-Failures to publish to MQTT from the reader loop are logged and do not affect the Tesira connection.
+MQTT publish failures inside the reader loop are logged and do not affect the connection.
 
-## Usage example
+## Example
 
 ```python
 import asyncio
@@ -253,23 +153,18 @@ async def main(mqtt_conn):
     }
 
     await tesira_conn.open()
-    print(f"Connected to Tesira {tesira_conn.serial_number}")
     await tesira_conn.subscribe_all(subscriptions)
-
-    # Change the level; the Tesira's publishToken update will flow to MQTT.
     await tesira_conn.update_state_and_command("OfficeSpeakersPCLevel_level_1", "-6")
 
-    # Keep the connection alive, reconnecting and resubscribing as needed.
-    barrier = asyncio.Barrier(1)
     try:
-        await tesira_conn.run(barrier, subscriptions)
+        await tesira_conn.run(asyncio.Barrier(1), subscriptions)
     finally:
         await tesira_conn.close()
 ```
 
 ## Testing
 
-`tests/fake_tesira.py` contains a configurable fake Tesira TTP server that reproduces the real device's behaviour (option negotiation, delayed banner with terminal preamble, character-by-character echo, `CR LF`/`CR NUL` endings, `publishToken` before `+OK`, `ALREADY_SUBSCRIBED`, silent and dropped sessions). `tests/test_tesira.py` exercises this class against it; run the suite with `scripts/test`.
+`tests/fake_tesira.py` is a fake Tesira server reproducing the real device's quirks (delayed banner, echo, `CR NUL` endings, `publishToken` before `+OK`, `ALREADY_SUBSCRIBED`, dropped sessions). `tests/test_tesira.py` runs this class against it; use `scripts/test`.
 
 ---
 

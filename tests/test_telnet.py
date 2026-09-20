@@ -1,4 +1,4 @@
-"""Tests for the line-oriented telnet wrapper."""
+"""Tests for BiampTesiraTelnetConnection."""
 
 from __future__ import annotations
 
@@ -19,7 +19,6 @@ async def test_connect_waits_for_banner_and_skips_preamble(
         "127.0.0.1", server.port, "test", timeout_seconds=2.0
     )
     try:
-        # Nothing from the preamble/banner must leak into the line stream.
         await telnet.write("DEVICE get serialNumber")
         lines = []
         while len(lines) < 2:
