@@ -5,14 +5,18 @@ target-version = "py312"
 # Source files import each other as top-level modules; tests do the same.
 src = [".", "src", "tests"]
 
+# Code blocks in the documentation are illustrative; do not lint or format them.
+extend-exclude = ["*.md"]
+
 [lint]
 select = [
     "ALL",
 ]
 
 ignore = [
-    "ANN101", # Missing type annotation for `self` in method
     "ANN401", # Dynamically typed expressions (typing.Any) are disallowed
+    "CPY001", # Missing copyright notice at top of file (the project does not use them)
+    "PLR0917", # Too many positional arguments (companion of PLR0913, handled case by case)
     "D203", # no-blank-line-before-class (incompatible with formatter)
     "D212", # multi-line-summary-first-line (incompatible with formatter)
     "COM812", # incompatible with formatter
