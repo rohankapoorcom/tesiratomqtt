@@ -12,6 +12,7 @@ import yaml
 
 from _version import __version__
 from errors import ClientError
+from health import HealthServer
 from models import Config
 from mqtt_connection import MqttConnection
 from tesira import BiampTesiraConnection
@@ -72,6 +73,7 @@ async def async_main(config: Config) -> None:
     """Run Tesira2MQTT until SIGINT/SIGTERM."""
     mqtt = MqttConnection(config.mqtt)
     tesira = BiampTesiraConnection(config.tesira, mqtt)
+    health = HealthServer(mqtt, tesira, config.health)
 
     async def on_command(key: str, value: str) -> None:
         try:
@@ -98,6 +100,12 @@ async def async_main(config: Config) -> None:
             supervise("MQTT", lambda: mqtt.run(on_command)), name="mqtt-supervisor"
         ),
     ]
+    if config.health.enabled:
+        tasks.append(
+            asyncio.create_task(
+                supervise("Health", health.run), name="health-supervisor"
+            )
+        )
     _LOGGER.info("Tesira2MQTT started")
 
     try:
@@ -106,6 +114,7 @@ async def async_main(config: Config) -> None:
         _LOGGER.info("Exiting gracefully")
         await mqtt.close()
         await tesira.close()
+        await health.close()
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)

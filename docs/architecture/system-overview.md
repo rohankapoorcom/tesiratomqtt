@@ -31,12 +31,13 @@ Tesira2MQTT is a bidirectional MQTT bridge for Biamp Tesira DSPs. It subscribes 
 
 ### `src/__init__.py` – entry point
 
-Loads and validates `config.yaml`, then runs two independent supervisor tasks:
+Loads and validates `config.yaml`, then runs independent supervisor tasks:
 
 - `BiampTesiraConnection.run()` – Tesira sessions and subscriptions.
 - `MqttConnection.run()` – broker connection; `set` messages are applied to the Tesira, rejected commands are logged.
+- `HealthServer.run()` – `aiohttp` probes on port 8080 (`/livez`, `/readyz`, `/health`).
 
-Neither task's failure affects the other; an unexpected exception restarts that loop. `SIGINT`/`SIGTERM` publish `offline`, close the telnet sessions and stop both loops.
+Neither Tesira nor MQTT failure affects the other; an unexpected exception restarts that loop. `SIGINT`/`SIGTERM` publish `offline`, close the telnet sessions and stop both loops.
 
 ### `src/mqtt_connection.py` – MqttConnection
 
@@ -59,9 +60,13 @@ See [Tesira Connection API](../api/tesira-connection.md).
 
 Line-oriented wrapper over `telnetlib3`: connects, enables TCP keepalive, waits for the welcome banner, writes `CR LF`-terminated commands and reads `CR LF`/`CR NUL`-terminated lines.
 
+### `src/health.py` – HealthServer
+
+`aiohttp` app on `AppRunner`/`TCPSite`. `/livez` is always 200. `/readyz` and `/health` are 200 only when `mqtt.connected` and `tesira.connected`. A connection outage must not restart the process; use `/livez` for liveness and `/readyz` for readiness.
+
 ### `src/models/` – configuration
 
-Pydantic models (`Config`, `MqttConfig`, `TesiraConfig`, `Subscription`) validate `config.yaml` at startup.
+Pydantic models (`Config`, `MqttConfig`, `TesiraConfig`, `Subscription`, `HealthConfig`) validate `config.yaml` at startup.
 
 ## Data Flows
 
@@ -150,7 +155,15 @@ homeassistant/number/03787145_OfficeSpeakersPCLevel_level_1/config
 
 ## Deployment
 
-Single container (`Dockerfile`) reading `/config/config.yaml`. Needs network access to the broker and TCP port 23 on the Tesira. The Tesira allows 32 telnet sessions; Tesira2MQTT uses two.
+Single container (`Dockerfile`) reading `/config/config.yaml`. Needs network access to the broker and TCP port 23 on the Tesira. Exposes `8080` for probes; the image `HEALTHCHECK` hits `/health`. The Tesira allows 32 telnet sessions; Tesira2MQTT uses two.
+
+```yaml
+livenessProbe:
+  httpGet: { path: /livez, port: 8080 }
+readinessProbe:
+  httpGet: { path: /readyz, port: 8080 }
+  initialDelaySeconds: 10
+```
 
 ## Testing
 

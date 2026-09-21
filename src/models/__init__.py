@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class MqttConfig(BaseModel):
@@ -56,9 +56,18 @@ class Subscription(BaseModel):
         return NotImplemented
 
 
+class HealthConfig(BaseModel):
+    """HTTP probe listener; omitted from config.yaml uses these defaults."""
+
+    enabled: bool = True
+    host: str = "0.0.0.0"  # noqa: S104
+    port: int = 8080
+
+
 class Config(BaseModel):
     """A datamodel representing the config in config.yaml."""
 
     mqtt: MqttConfig
     tesira: TesiraConfig
     subscriptions: set[Subscription]
+    health: HealthConfig = Field(default_factory=HealthConfig)
