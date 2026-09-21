@@ -167,4 +167,4 @@ async def main(mqtt_conn):
 ---
 
 **Last Updated**: September 2026
-**API Version**: 1.1.30
+**API Version**: 1.1.31
