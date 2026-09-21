@@ -31,7 +31,9 @@ jobs:
       - name: Bump version and commit (only for pushes to main)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && !startsWith(github.event.head_commit.message, 'auto:')
         id: bump
-        uses: callowayproject/bump-my-version@master
+        # Pin to a PyPI-published release. @master tracks unreleased versions
+        # (currently 1.5.2) that pip cannot install.
+        uses: callowayproject/bump-my-version@1.5.1
         with:
           args: patch
           github-token: ${{ secrets.GITHUB_TOKEN }}
