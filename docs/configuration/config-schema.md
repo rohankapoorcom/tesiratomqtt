@@ -169,9 +169,11 @@ Optional HTTP listener for Docker and Kubernetes probes. Omitted values use the 
 |------|--------|---------|
 | `GET /livez` | 200 | Process is up. Use as Kubernetes liveness. |
 | `GET /readyz` | 200 / 503 | MQTT and Tesira telnet are both connected. Use as Kubernetes readiness. |
-| `GET /health` | 200 / 503 | Same as `/readyz`. Used by the image `HEALTHCHECK`. |
+| `GET /health` | 200 / 503 | Same as `/readyz`. |
 
 Body: `{"status": "ok"|"unavailable", "mqtt": bool, "tesira": bool}`.
+
+The image `HEALTHCHECK` probes `$HEALTHCHECK_URL` (`http://127.0.0.1:8080/health` by default). A disabled listener or a non-8080 `port` needs a matching `HEALTHCHECK_URL` (or a custom Docker health check).
 
 ```yaml
 health:

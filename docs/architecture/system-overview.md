@@ -35,7 +35,7 @@ Loads and validates `config.yaml`, then runs independent supervisor tasks:
 
 - `BiampTesiraConnection.run()` – Tesira sessions and subscriptions.
 - `MqttConnection.run()` – broker connection; `set` messages are applied to the Tesira, rejected commands are logged.
-- `HealthServer.run()` – `aiohttp` probes on port 8080 (`/livez`, `/readyz`, `/health`).
+- `HealthServer.run()` – `aiohttp` probes (`/livez`, `/readyz`, `/health`) on the configured `health` port (default 8080).
 
 Neither Tesira nor MQTT failure affects the other; an unexpected exception restarts that loop. `SIGINT`/`SIGTERM` publish `offline`, close the telnet sessions and stop both loops.
 
@@ -155,7 +155,7 @@ homeassistant/number/03787145_OfficeSpeakersPCLevel_level_1/config
 
 ## Deployment
 
-Single container (`Dockerfile`) reading `/config/config.yaml`. Needs network access to the broker and TCP port 23 on the Tesira. Exposes `8080` for probes; the image `HEALTHCHECK` hits `/health`. The Tesira allows 32 telnet sessions; Tesira2MQTT uses two.
+Single container (`Dockerfile`) reading `/config/config.yaml`. Needs network access to the broker and TCP port 23 on the Tesira. Probes default to port `8080`; the image `HEALTHCHECK` hits `$HEALTHCHECK_URL` (default `http://127.0.0.1:8080/health`). The Tesira allows 32 telnet sessions; Tesira2MQTT uses two.
 
 ```yaml
 livenessProbe:

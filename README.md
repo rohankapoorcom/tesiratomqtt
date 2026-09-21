@@ -172,10 +172,12 @@ python -m src
 
 ## Health checks
 
-Port `8080` (override with `health` in `config.yaml`):
+Port `8080` by default (`health` in `config.yaml`):
 
 - `GET /livez` — process is up (Kubernetes liveness)
-- `GET /readyz` / `GET /health` — MQTT and Tesira telnet are both connected (Kubernetes readiness; image `HEALTHCHECK`)
+- `GET /readyz` / `GET /health` — MQTT and Tesira telnet are both connected (Kubernetes readiness)
+
+The image `HEALTHCHECK` probes `$HEALTHCHECK_URL` (`http://127.0.0.1:8080/health` by default). If you disable the listener or change `health.port`, override `HEALTHCHECK_URL` or the image health check.
 
 ## 🔧 Troubleshooting
 

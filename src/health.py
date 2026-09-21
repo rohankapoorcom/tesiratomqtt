@@ -64,7 +64,6 @@ class HealthServer:
 
     async def run(self) -> None:
         """Listen until ``close()``."""
-        self._stop.clear()
         runner = web.AppRunner(create_app(self._mqtt, self._tesira))
         await runner.setup()
         site = web.TCPSite(runner, self._config.host, self._config.port)

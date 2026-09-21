@@ -31,9 +31,10 @@ USER appuser
 # Copy the source code into the container.
 COPY src .
 
+ENV HEALTHCHECK_URL=http://127.0.0.1:8080/health
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')"
+    CMD python -c "import os,urllib.request; urllib.request.urlopen(os.environ['HEALTHCHECK_URL'])"
 
 # Run the application.
 ENTRYPOINT ["python", "__init__.py"]

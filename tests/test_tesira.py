@@ -370,8 +370,12 @@ async def test_run_retries_with_backoff_while_tesira_is_down(
 
         server.silent = False
         server.banner_delay = 0.02
-        await wait_until(lambda: connection.connected, deadline_seconds=4)
-        assert server.subscribe_commands("Mic1_mute_1")
+        await wait_until(
+            lambda: (
+                connection.connected and bool(server.subscribe_commands("Mic1_mute_1"))
+            ),
+            deadline_seconds=4,
+        )
     finally:
         task.cancel()
         with pytest.raises(asyncio.CancelledError):

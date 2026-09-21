@@ -112,7 +112,9 @@ def test_health_config_is_optional() -> None:
 
 @pytest.fixture
 async def bridge(
-    make_config: Callable[..., TesiraConfig], mqtt_conn: MqttConnection
+    make_config: Callable[..., TesiraConfig],
+    mqtt_conn: MqttConnection,
+    server: FakeTesiraServer,
 ) -> AsyncIterator[BiampTesiraConnection]:
     tesira = BiampTesiraConnection(make_config(), mqtt_conn)
 
@@ -124,6 +126,13 @@ async def bridge(
         running(tesira.run(ALL_SUBS)),
         running(mqtt_conn.run(on_command)),
     ):
+        await wait_until(
+            lambda: (
+                tesira.connected
+                and mqtt_conn.connected
+                and len(server.subscribe_commands()) == len(ALL_SUBS)
+            )
+        )
         yield tesira
     await tesira.close()
 
@@ -160,6 +169,9 @@ async def test_readyz_follows_real_outages(
 async def test_health_server_listens_and_stops() -> None:
     config = HealthConfig(host="127.0.0.1", port=0)
     server = HealthServer(FakeLink(), FakeLink(), config)
-    async with running(server.run()):
+    async with running(server.run()) as task:
         await asyncio.sleep(0.05)
-    await server.close()
+        await server.close()
+        await asyncio.wait_for(task, 1)
+    assert task.done()
+    assert task.exception() is None
