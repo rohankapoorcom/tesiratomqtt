@@ -201,13 +201,23 @@ Solution:
 
 #### Performance Issues
 
-**Problem**: High CPU usage or slow response
+**Problem**: Slow startup or slow response
 ```
 Solution:
-- Reduce resubscription_time for faster updates
+- Startup takes ~6 seconds: the Tesira sets up telnet sessions one at a
+  time at ~3 seconds each
+- resubscription_time does not affect update latency; changes are pushed
+  by the Tesira immediately
 - Check network latency to both MQTT broker and Tesira
 - Monitor log levels (avoid DEBUG in production)
-- Consider running on more powerful hardware
+```
+
+**Problem**: `Unexpected serial number ... from Tesira` at startup
+```
+Solution:
+- The reply to DEVICE get serialNumber was not a plain serial. Check it
+  in a telnet session; it is used in MQTT topics and may only contain
+  letters, digits, '_' and '-'
 ```
 
 ### Debug Mode
@@ -269,8 +279,8 @@ cd tesiratomqtt
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-# Install dependencies
-pip install -r requirements.txt
+# Install runtime and development dependencies
+pip install -r requirements-dev.txt
 
 # Run linting
 scripts/lint
@@ -278,6 +288,10 @@ scripts/lint
 # Run tests
 scripts/test
 ```
+
+### Tests
+
+The tests run offline against a fake Tesira (`tests/fake_tesira.py`) that reproduces the device's telnet quirks. Run them with `scripts/test`; pytest arguments pass through (`scripts/test -k reconnect -v`).
 
 ### Code Structure
 
@@ -293,6 +307,11 @@ src/
 ├── telnet.py            # Telnet connection handling
 └── utils/               # Utility functions
     └── arguments.py      # Command line argument handling
+tests/
+├── conftest.py          # Fixtures
+├── fake_tesira.py       # Fake Tesira TTP server
+├── test_telnet.py
+└── test_tesira.py
 ```
 
 ### Tesira Text Protocol Reference

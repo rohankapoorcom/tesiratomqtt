@@ -21,7 +21,9 @@ class TesiraConfig(BaseModel):
 
     host: str
     port: int
-    resubscription_time: int
+    resubscription_time: float
+    command_timeout: float = 10.0
+    heartbeat_interval: float = 60.0  # 0 disables
 
 
 class Subscription(BaseModel):

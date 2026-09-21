@@ -1,5 +1,8 @@
 name: "Lint"
 
+permissions:
+  contents: read
+
 on:
   push:
     branches:
@@ -30,3 +33,22 @@ jobs:
 
         - name: "Format"
           run: python3 -m ruff format . --check
+
+  pytest:
+    name: "Tests"
+    runs-on: "ubuntu-latest"
+    steps:
+        - name: "Checkout the repository"
+          uses: "actions/checkout@v7"
+
+        - name: "Set up Python"
+          uses: actions/setup-python@v6.2.0
+          with:
+            python-version: "3.13"
+            cache: "pip"
+
+        - name: "Install requirements"
+          run: python3 -m pip install -r requirements-dev.txt
+
+        - name: "Test"
+          run: python3 -m pytest

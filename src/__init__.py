@@ -13,7 +13,7 @@ import aiomqtt
 import yaml
 
 from _version import __version__
-from errors import ClientConnectionError, ClientTimeoutError
+from errors import ClientConnectionError, ClientError, ClientResponseError
 from models import Config, Subscription, TesiraConfig
 from mqtt_connection import AVAILABILITY_TOPIC, MqttConnection
 from tesira import BiampTesiraConnection
@@ -109,8 +109,16 @@ async def listen_to_incoming_mqtt_messages(
     async for message in mqtt_client.messages:
         decoded_payload: str = message.payload.decode("utf-8")  # type: ignore  # noqa: PGH003
         _LOGGER.debug("%s - Received MQTT message: %s", message.topic, decoded_payload)
-        key = message.topic.value.split("/")[1]
-        await tesira_connection.update_state_and_command(key, decoded_payload)
+        parts = message.topic.value.split("/")
+        if len(parts) < 2:  # noqa: PLR2004
+            _LOGGER.warning("Ignoring message on unexpected topic %s", message.topic)
+            continue
+        try:
+            await tesira_connection.update_state_and_command(parts[1], decoded_payload)
+        except ClientError as err:
+            _LOGGER.warning(
+                "Failed to apply %s to %s: %s", decoded_payload, parts[1], err
+            )
 
 
 async def async_main() -> None:
@@ -135,7 +143,7 @@ async def async_main() -> None:
                 tesira_connection = await establish_tesira_connection(
                     config.tesira, config.subscriptions, mqtt_connection
                 )
-            except (ClientConnectionError, ClientTimeoutError):
+            except (ClientConnectionError, ClientResponseError):
                 _LOGGER.exception("Failed to establish Tesira connection")
                 # Clean up: publish offline status and exit gracefully
                 await handle_exit(mqtt_connection, None, None)
@@ -143,24 +151,16 @@ async def async_main() -> None:
                 await asyncio.sleep(0.5)
                 sys.exit(1)
 
-            barrier = asyncio.Barrier(4)
+            barrier = asyncio.Barrier(3)
             tasks = []
             tasks.append(
-                tg.create_task(tesira_connection.listen_to_incoming_messages(barrier))
+                tg.create_task(tesira_connection.run(barrier, config.subscriptions))
             )
 
             tasks.append(
                 tg.create_task(
                     listen_to_incoming_mqtt_messages(
                         barrier, mqtt_client, tesira_connection
-                    )
-                )
-            )
-
-            tasks.append(
-                tg.create_task(
-                    tesira_connection.automatically_subscribe_on_schedule(
-                        barrier, config.subscriptions
                     )
                 )
             )

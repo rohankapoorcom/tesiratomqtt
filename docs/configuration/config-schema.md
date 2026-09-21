@@ -51,7 +51,9 @@ mqtt:
 tesira:
   host: string
   port: integer
-  resubscription_time: integer
+  resubscription_time: number
+  command_timeout: number      # optional
+  heartbeat_interval: number   # optional
 
 subscriptions:
   - instance_tag: string
@@ -116,12 +118,14 @@ Controls Biamp Tesira device connection settings.
 |-------|------|-------------|---------|
 | `host` | `string` | Tesira device hostname or IP address | `tesira.device.com` |
 | `port` | `integer` | Tesira telnet port number | `23` |
+| `resubscription_time` | `number` | Seconds between subscription refreshes (subscriptions are also re-created after a reconnect) | `300` |
 
 #### Optional Fields
 
 | Field | Type | Default | Description | Example |
 |-------|------|---------|-------------|---------|
-| `resubscription_time` | `integer` | `300` | Resubscription interval in seconds | `300` |
+| `command_timeout` | `number` | `10` | Seconds to wait for a connection, banner or command response; a timeout rebuilds the connection | `10` |
+| `heartbeat_interval` | `number` | `60` | Seconds between heartbeats that detect a dead session; `0` disables | `60` |
 
 #### Example
 
@@ -130,13 +134,17 @@ tesira:
   host: tesira.device.com
   port: 23
   resubscription_time: 300
+  command_timeout: 10
+  heartbeat_interval: 60
 ```
 
 #### Validation Rules
 
 - `host`: Must be non-empty string, valid hostname or IP address
 - `port`: Must be integer between 1-65535 (default Tesira port: 23)
-- `resubscription_time`: Must be positive integer (recommended: 60-600 seconds)
+- `resubscription_time`: Must be a positive number (recommended: 60-600 seconds)
+- `command_timeout`: Must be a positive number (recommended: 5-30 seconds)
+- `heartbeat_interval`: Must be zero or a positive number
 
 ## Subscription Configuration
 
@@ -469,7 +477,7 @@ mqtt:
 tesira:
   host: tesira.production.com
   port: 23
-  resubscription_time: 60  # Faster updates for production
+  resubscription_time: 300
 
 subscriptions:
   - instance_tag: ConferenceRoomSpeakersLevel

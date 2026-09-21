@@ -1,332 +1,153 @@
 # System Architecture Overview
 
-## Overview
-
-Tesira2MQTT is a bidirectional MQTT bridge that enables control and monitoring of Biamp Tesira Digital Signal Processors (DSPs). The system architecture is designed for reliability, scalability, and ease of integration with Home Assistant and other MQTT-based systems.
+Tesira2MQTT is a bidirectional MQTT bridge for Biamp Tesira DSPs. It subscribes to the level and mute controls listed in the configuration, publishes their state (and Home Assistant discovery messages) to MQTT, and applies commands received on MQTT back to the Tesira.
 
 ## High-Level Architecture
 
 ```
-┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│   Home Assistant │    │   MQTT Broker   │    │  Tesira2MQTT   │
-│                 │    │                 │    │                 │
-│  ┌─────────────┐ │    │  ┌─────────────┐ │    │ ┌─────────────┐ │
-│  │   Entities  │ │◄──►│  │   Topics    │ │◄──►│ │ MQTT Client │ │
-│  │             │ │    │  │             │ │    │ │             │ │
-│  └─────────────┘ │    │  └─────────────┘ │    │ └─────────────┘ │
-│                 │    │                 │    │                 │
-│  ┌─────────────┐ │    │  ┌─────────────┐ │    │ ┌─────────────┐ │
-│  │  Discovery  │ │◄──►│  │ Discovery   │ │◄──►│ │ Discovery   │ │
-│  │  Messages   │ │    │  │ Messages    │ │    │ │ Publisher   │ │
-│  └─────────────┘ │    │  └─────────────┘ │    │ └─────────────┘ │
-└─────────────────┘    └──────────────────┘    │                 │
-                                                │ ┌─────────────┐ │
-                                                │ │ Tesira      │ │
-                                                │ │ Connection │ │
-                                                │ │ Manager    │ │
-                                                │ └─────────────┘ │
-                                                │                 │
-                                                │ ┌─────────────┐ │
-                                                │ │ Telnet     │ │
-                                                │ │ Clients    │ │
-                                                │ └─────────────┘ │
-                                                └─────────────────┘
-                                                         │
-                                                         ▼
-                                                ┌─────────────────┐
-                                                │  Biamp Tesira  │
-                                                │      DSP       │
-                                                │                 │
-                                                │ ┌─────────────┐ │
-                                                │ │   Device    │ │
-                                                │ │ Instances   │ │
-                                                │ └─────────────┘ │
-                                                └─────────────────┘
+┌─────────────────┐    ┌─────────────────┐    ┌──────────────────────────────┐
+│  Home Assistant │◄──►│   MQTT Broker   │◄──►│  Tesira2MQTT                 │
+│                 │    │                 │    │                              │
+│  entities via   │    │  state /        │    │  MqttConnection              │
+│  MQTT discovery │    │  attributes /   │    │    publish state, discovery, │
+│                 │    │  set /          │    │    availability              │
+│                 │    │  availability   │    │                              │
+└─────────────────┘    └─────────────────┘    │  BiampTesiraConnection       │
+                                              │    state store, supervisor,  │
+                                              │    two reader loops          │
+                                              │                              │
+                                              │  BiampTesiraTelnetConnection │
+                                              │    line-oriented telnet      │
+                                              └──────────────┬───────────────┘
+                                                             │ telnet (TTP), 2 sessions
+                                                             ▼
+                                              ┌──────────────────────────────┐
+                                              │  Biamp Tesira DSP            │
+                                              │    DSP blocks (instance tags)│
+                                              └──────────────────────────────┘
 ```
 
-## Component Architecture
+## Components
 
-### Core Components
+### `src/__init__.py` – entry point
 
-#### 1. MQTT Connection Manager (`mqtt_connection.py`)
+Loads and validates `config.yaml`, connects to MQTT and the Tesira, creates the subscriptions, then runs two tasks in a `TaskGroup`:
 
-**Responsibilities:**
-- Manages MQTT broker connections
-- Publishes device states and attributes
-- Publishes Home Assistant discovery messages
-- Handles MQTT message queuing and retry logic
+- `BiampTesiraConnection.run()` – Tesira supervisor.
+- `listen_to_incoming_mqtt_messages()` – applies `<base_topic>/<identifier>/set` messages to the Tesira. Rejected commands are logged, not fatal.
 
-**Key Features:**
-- Automatic reconnection on connection loss
-- QoS 2 for reliable message delivery
-- Retained messages for state persistence
-- Topic validation and sanitization
+`SIGINT`/`SIGTERM` publish `offline`, cancel the tasks and close the sessions.
 
-#### 2. Tesira Connection Manager (`tesira.py`)
+### `src/mqtt_connection.py` – MqttConnection
 
-**Responsibilities:**
-- Manages telnet connections to Tesira devices
-- Handles device subscriptions and commands
-- Implements automatic resubscription
-- Manages connection pooling and semaphores
+- Publishes retained availability (`online`/`offline`) with a last-will `offline`.
+- `publish_state()` publishes `<base_topic>/<identifier>/state` and `/attributes` (retained, QoS 2). On first sight of an identifier it also publishes the Home Assistant discovery message to `homeassistant/<switch|number>/<unique_id>/config` and subscribes to the `set` topic.
 
-**Key Features:**
-- Dual telnet connections (subscription + command)
-- Automatic reconnection and resubscription
-- Command queuing and timeout handling
-- Serial number validation
+aiomqtt does not reconnect on its own: if the broker connection drops the process exits and the orchestrator restarts it.
 
-#### 3. Configuration System (`models/`)
+### `src/tesira.py` – BiampTesiraConnection
 
-**Responsibilities:**
-- Validates configuration data using Pydantic models
-- Provides type safety and data validation
-- Handles configuration serialization/deserialization
-- Manages subscription deduplication
+- Opens a **subscription** session and a **command** session concurrently and validates the device serial number.
+- One **reader loop** per session classifies each line as a `publishToken` update (to the state store and MQTT), a `+OK`/`-ERR` response (to the command in flight) or echo/noise (ignored).
+- Commands are serialised per session with a lock; no fixed delays.
+- **Supervisor** (`run()`): reconnects with exponential backoff and resubscribes on loss; refreshes subscriptions every `resubscription_time` seconds. Loss is detected via EOF, command timeout or heartbeat failure.
 
-**Key Features:**
-- YAML configuration validation
-- Environment variable support
-- Type-safe configuration access
-- Automatic validation on startup
+See [Tesira Connection API](../api/tesira-connection.md).
 
-#### 4. Telnet Connection Handler (`telnet.py`)
+### `src/telnet.py` – BiampTesiraTelnetConnection
 
-**Responsibilities:**
-- Low-level telnet communication with Tesira devices
-- Command parsing and response handling
-- Connection state management
-- Error handling and recovery
+Line-oriented wrapper over `telnetlib3`: connects, enables TCP keepalive, waits for the welcome banner, writes `CR LF`-terminated commands and reads `CR LF`/`CR NUL`-terminated lines.
 
-**Key Features:**
-- Async telnet communication
-- Command/response parsing
-- Connection health monitoring
-- Automatic reconnection
+### `src/models/` – configuration
 
-## Data Flow Architecture
+Pydantic models (`Config`, `MqttConfig`, `TesiraConfig`, `Subscription`) validate `config.yaml` at startup.
 
-### 1. Initialization Flow
+## Data Flows
+
+### Startup
 
 ```
-Application Start
-       │
-       ▼
-Load Configuration ──► Validate Config ──► Parse Subscriptions
-       │                     │                     │
-       ▼                     ▼                     ▼
-Create MQTT Client ──► Connect to Broker ──► Publish Availability
-       │                     │                     │
-       ▼                     ▼                     ▼
-Create Tesira Client ──► Connect to Device ──► Get Serial Number
-       │                     │                     │
-       ▼                     ▼                     ▼
-Subscribe to Devices ──► Publish Discovery ──► Start Monitoring
+Load config ─► connect MQTT
+  └─► open() : both sessions concurrently ─► banner ─► reader loops ─► DEVICE get serialNumber
+  └─► subscribe_all() : per subscription (level: get minLevel/maxLevel) ─► subscribe
+        └─► Tesira replies with current value ─► state store ─► MQTT state + discovery
+  └─► publish "online", start run() and the MQTT listener
 ```
 
-### 2. State Monitoring Flow
+The Tesira sets sessions up one at a time at ~3 s each, so startup is dominated by ~6 s of session setup; subscriptions take milliseconds.
+
+### State change on the Tesira
 
 ```
-Tesira Device State Change
-       │
-       ▼
-Telnet Response Received
-       │
-       ▼
-Parse Response Data ──► Validate State Value ──► Update Internal State
-       │                     │                     │
-       ▼                     ▼                     ▼
-Create MQTT Message ──► Publish State Topic ──► Publish Attributes Topic
-       │                     │                     │
-       ▼                     ▼                     ▼
-Home Assistant Receives ──► Updates Entity State ──► User Sees Change
+! "publishToken":"<identifier>" "value":<v>   (subscription session)
+  └─► coerce value ─► state store ─► publish_state()
+        ├─► <base_topic>/<identifier>/state       (retained)
+        ├─► <base_topic>/<identifier>/attributes  (retained)
+        └─► homeassistant/.../config              (first time only)
 ```
 
-### 3. Command Execution Flow
+### Command from Home Assistant
 
 ```
-User Command (Home Assistant)
-       │
-       ▼
-MQTT Command Received
-       │
-       ▼
-Parse Command Topic ──► Validate Command Data ──► Extract Device Info
-       │                     │                     │
-       ▼                     ▼                     ▼
-Create Tesira Command ──► Send via Telnet ──► Wait for Response
-       │                     │                     │
-       ▼                     ▼                     ▼
-Validate Response ──► Update Internal State ──► Publish State Update
-       │                     │                     │
-       ▼                     ▼                     ▼
-Home Assistant Updates ──► User Sees Result ──► Command Complete
+<base_topic>/<identifier>/set
+  └─► "<instance_tag> set <attribute> <index> <payload>"   (command session) ─► +OK
+Tesira then sends a publishToken update, which follows the path above.
 ```
 
-## MQTT Topic Architecture
-
-### Topic Structure
+### Connection loss
 
 ```
-{base_topic}/
-├── availability                    # Service availability
-├── {device_identifier}/
-│   ├── state                       # Device state
-│   ├── attributes                  # Device attributes
-│   └── set                         # Command topic
-└── discovery/
-    ├── number/{unique_id}/config   # Level control discovery
-    └── switch/{unique_id}/config   # Mute control discovery
+EOF / command timeout / heartbeat failure
+  └─► in-flight commands fail ─► run() tears down both sessions
+        └─► open() + subscribe_all(), backoff 1 s → 60 s while unreachable
 ```
 
-### Topic Examples
+## MQTT Topic Layout
 
 ```
-tesira2mqtt/
-├── availability
-├── office_speakers_pc_level/
-│   ├── state
-│   ├── attributes
-│   └── set
-├── office_speakers_pc_mute/
-│   ├── state
-│   ├── attributes
-│   └── set
-└── homeassistant/
-    ├── number/tesira2mqtt_office_speakers_pc_level/config
-    └── switch/tesira2mqtt_office_speakers_pc_mute/config
+<base_topic>/
+├── availability                         {"state": "online"|"offline"}   (retained, last will)
+└── <identifier>/                        <instance_tag>_<attribute>_<index>
+    ├── state                            JSON value, retained
+    ├── attributes                       state-store entry, retained
+    └── set                              command topic
+
+homeassistant/
+├── switch/<unique_id>/config            mute
+└── number/<unique_id>/config            level (min/max/step in dB)
 ```
 
-## Error Handling Architecture
-
-### Error Types
-
-#### 1. Connection Errors
-- **MQTT Connection Loss**: Automatic reconnection with exponential backoff
-- **Tesira Connection Loss**: Automatic reconnection and resubscription
-- **Network Timeouts**: Retry with increasing delays
-
-#### 2. Command Errors
-- **Invalid Commands**: Validation and error logging
-- **Command Timeouts**: Retry mechanism with fallback
-- **Device Errors**: Error propagation to MQTT topics
-
-#### 3. Configuration Errors
-- **Invalid Configuration**: Startup validation with clear error messages
-- **Missing Fields**: Default value assignment where possible
-- **Type Errors**: Automatic type conversion and validation
-
-### Error Recovery
+Example for `OfficeSpeakersPCLevel` on serial `03787145`:
 
 ```
-Error Detected
-       │
-       ▼
-Log Error Details ──► Determine Error Type ──► Select Recovery Strategy
-       │                     │                     │
-       ▼                     ▼                     ▼
-Connection Error ──► Reconnection Attempt ──► Resubscription
-       │                     │                     │
-       ▼                     ▼                     ▼
-Command Error ──► Retry with Backoff ──► Fallback to Last Known State
-       │                     │                     │
-       ▼                     ▼                     ▼
-Config Error ──► Validation Error ──► Application Shutdown
+tesira2mqtt/OfficeSpeakersPCLevel_level_1/state
+tesira2mqtt/OfficeSpeakersPCLevel_level_1/attributes
+tesira2mqtt/OfficeSpeakersPCLevel_level_1/set
+homeassistant/number/03787145_OfficeSpeakersPCLevel_level_1/config
 ```
 
-## Scalability Considerations
+## Error Handling
 
-### Horizontal Scaling
+| Situation | Behaviour |
+|-----------|-----------|
+| Tesira unreachable at startup | `offline` published, exit 1. |
+| Tesira connection lost | `run()` reconnects and resubscribes. |
+| Command times out | Connection rebuilt (a late reply would be matched to the next command). |
+| Subscription rejected | Logged and skipped. |
+| MQTT command rejected | Logged. |
+| MQTT publish fails in reader loop | Logged. |
+| MQTT broker connection lost | Process exits; orchestrator restarts it. |
+| Invalid configuration | Exit at startup. |
 
-- **Multiple Tesira Devices**: Each device requires separate telnet connections
-- **MQTT Broker Clustering**: Support for clustered MQTT brokers
-- **Load Distribution**: Multiple application instances can share MQTT topics
+## Deployment
 
-### Vertical Scaling
+Single container (`Dockerfile`) reading `/config/config.yaml`. Needs network access to the broker and TCP port 23 on the Tesira. The Tesira allows 32 telnet sessions; Tesira2MQTT uses two.
 
-- **Connection Pooling**: Efficient telnet connection management
-- **Async Operations**: Non-blocking I/O for high concurrency
-- **Memory Management**: Efficient subscription and state management
+## Testing
 
-### Performance Optimization
-
-- **Connection Reuse**: Persistent telnet connections
-- **Message Batching**: Batch MQTT messages where possible
-- **Caching**: Cache device states to reduce Tesira queries
-- **Compression**: MQTT message compression for large payloads
-
-## Security Architecture
-
-### Network Security
-
-- **TLS/SSL**: Support for encrypted MQTT connections
-- **Authentication**: MQTT username/password authentication
-- **Network Isolation**: Tesira devices on isolated networks
-
-### Application Security
-
-- **Input Validation**: All inputs validated and sanitized
-- **Command Validation**: Tesira commands validated before execution
-- **Error Handling**: Secure error messages without sensitive data
-
-### Data Security
-
-- **Configuration Encryption**: Sensitive configuration data protection
-- **Log Sanitization**: Sensitive data removed from logs
-- **Access Control**: MQTT topic access control
-
-## Monitoring and Observability
-
-### Health Checks
-
-- **MQTT Connection**: Periodic connection health checks
-- **Tesira Connection**: Telnet connection monitoring
-- **Service Availability**: Overall service health status
-
-### Metrics
-
-- **Connection Metrics**: Connection success/failure rates
-- **Command Metrics**: Command execution times and success rates
-- **Message Metrics**: MQTT message publish rates and errors
-
-### Logging
-
-- **Structured Logging**: JSON-formatted logs for easy parsing
-- **Log Levels**: Configurable log levels for different environments
-- **Log Rotation**: Automatic log rotation and cleanup
-
-## Deployment Architecture
-
-### Container Deployment
-
-```
-Docker Host
-├── Tesira2MQTT Container
-│   ├── Application Code
-│   ├── Configuration Volume
-│   ├── Log Volume
-│   └── Network Access
-├── MQTT Broker Container
-└── Monitoring Container
-```
-
-### Network Topology
-
-```
-Internet
-    │
-    ▼
-Firewall/Router
-    │
-    ▼
-Local Network
-├── MQTT Broker
-├── Tesira2MQTT
-├── Home Assistant
-└── Tesira Devices
-```
+`tests/fake_tesira.py` is a fake Tesira server; `tests/` covers the telnet wrapper and the connection (echo, line endings, interleaving, timeouts, disconnects, reconnect/resubscribe). Run with `scripts/test`.
 
 ---
 
-**Last Updated**: September 2025
+**Last Updated**: September 2026
 **Architecture Version**: 1.1.28
