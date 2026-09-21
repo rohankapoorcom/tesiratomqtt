@@ -123,7 +123,6 @@ class BiampTesiraConnection:
             "Connecting to Tesira at %s:%s", self._tesira.host, self._tesira.port
         )
         await self._teardown()
-        self._closing = False
         self._connection_lost.clear()
 
         channels = (self._subscription_channel, self._command_channel)
@@ -226,6 +225,7 @@ class BiampTesiraConnection:
     ) -> None:
         """Reconnect and resubscribe on loss; refresh subscriptions on schedule."""
         _LOGGER.info("Starting Tesira supervisor loop")
+        self._closing = False
         await barrier.wait()
         backoff = _RECONNECT_BACKOFF_INITIAL
         while not self._closing:
