@@ -531,4 +531,4 @@ print('Configuration is valid')
 ---
 
 **Last Updated**: September 2025
-**Schema Version**: 1.1.29
+**Schema Version**: 1.1.30
