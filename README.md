@@ -14,6 +14,7 @@ Tesira2MQTT is a powerful MQTT bridge application that enables seamless control 
 - **Mute Control**: Enable/disable mute functionality for audio channels
 - **Real-time Monitoring**: Subscribe to device state changes and publish updates
 - **Resilient**: Reconnects to the Tesira and the MQTT broker independently; a broker redeploy does not restart the app or disturb the Tesira
+- **Health checks**: HTTP probes for Docker and Kubernetes (`/livez`, `/readyz`, `/health`)
 - **Docker Support**: Easy deployment with containerized application
 - **Flexible Configuration**: YAML-based configuration with validation
 - **Asynchronous Operations**: High-performance async/await implementation
@@ -41,6 +42,8 @@ services:
     image: rohankapoorcom/tesira2mqtt:latest
     container_name: tesira2mqtt
     restart: unless-stopped
+    ports:
+      - "8080:8080"
     volumes:
       - ./config.yaml:/app/config.yaml:ro
     environment:
@@ -62,6 +65,7 @@ docker-compose up -d
 # Run with Docker
 docker run -d \
   --name tesira2mqtt \
+  -p 8080:8080 \
   -v $(pwd)/config.yaml:/app/config.yaml \
   --restart unless-stopped \
   rohankapoorcom/tesira2mqtt:latest
@@ -165,6 +169,15 @@ python -m src --loglevel debug
 export LOGLEVEL=debug
 python -m src
 ```
+
+## Health checks
+
+Port `8080` by default (`health` in `config.yaml`):
+
+- `GET /livez` — process is up (Kubernetes liveness)
+- `GET /readyz` / `GET /health` — MQTT and Tesira telnet are both connected (Kubernetes readiness)
+
+The image `HEALTHCHECK` probes `$HEALTHCHECK_URL` (`http://127.0.0.1:8080/health` by default). If you disable the listener or change `health.port`, override `HEALTHCHECK_URL` or the image health check.
 
 ## 🔧 Troubleshooting
 
@@ -303,6 +316,7 @@ src/
 ├── __init__.py          # Main application entry point
 ├── _version.py          # Version information
 ├── errors.py            # Custom exception classes
+├── health.py            # HTTP liveness/readiness probes
 ├── models/              # Pydantic data models
 │   └── __init__.py      # Configuration models
 ├── mqtt_connection.py   # MQTT client management
@@ -315,6 +329,7 @@ tests/
 ├── fake_mqtt.py         # In-memory stand-in for aiomqtt.Client
 ├── fake_tesira.py       # Fake Tesira TTP server
 ├── test_bridge.py       # Both supervisors together
+├── test_health.py
 ├── test_mqtt.py
 ├── test_telnet.py
 └── test_tesira.py

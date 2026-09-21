@@ -62,6 +62,11 @@ subscriptions:
     index: integer
     name: string
     device_name: string
+
+health:                        # optional
+  enabled: boolean
+  host: string
+  port: integer
 ```
 
 ## MQTT Configuration
@@ -147,6 +152,35 @@ tesira:
 - `resubscription_time`: Must be a positive number (recommended: 60-600 seconds)
 - `command_timeout`: Must be a positive number (recommended: 5-30 seconds)
 - `heartbeat_interval`: Must be zero or a positive number
+
+## Health Configuration
+
+### Section: `health`
+
+Optional HTTP listener for Docker and Kubernetes probes. Omitted values use the defaults.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | `boolean` | `true` | Serve probe endpoints |
+| `host` | `string` | `0.0.0.0` | Bind address |
+| `port` | `integer` | `8080` | Bind port |
+
+| Path | Status | Meaning |
+|------|--------|---------|
+| `GET /livez` | 200 | Process is up. Use as Kubernetes liveness. |
+| `GET /readyz` | 200 / 503 | MQTT and Tesira telnet are both connected. Use as Kubernetes readiness. |
+| `GET /health` | 200 / 503 | Same as `/readyz`. |
+
+Body: `{"status": "ok"|"unavailable", "mqtt": bool, "tesira": bool}`.
+
+The image `HEALTHCHECK` probes `$HEALTHCHECK_URL` (`http://127.0.0.1:8080/health` by default). A disabled listener or a non-8080 `port` needs a matching `HEALTHCHECK_URL` (or a custom Docker health check).
+
+```yaml
+health:
+  enabled: true
+  host: 0.0.0.0
+  port: 8080
+```
 
 ## Subscription Configuration
 

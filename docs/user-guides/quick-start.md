@@ -69,6 +69,8 @@ services:
     image: rohankapoorcom/tesira2mqtt:latest
     container_name: tesira2mqtt
     restart: unless-stopped
+    ports:
+      - "8080:8080"
     volumes:
       - ./config.yaml:/app/config.yaml:ro
     environment:

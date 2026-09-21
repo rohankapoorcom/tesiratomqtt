@@ -143,6 +143,19 @@ def __eq__(self, other: object) -> bool:
 
 This allows Subscription objects to be used in sets and as dictionary keys.
 
+### HealthConfig
+
+```python
+class HealthConfig(BaseModel):
+    """HTTP probe listener; omitted from config.yaml uses these defaults."""
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `enabled` | `bool` | No (default `True`) | Serve `/livez`, `/readyz`, `/health` |
+| `host` | `str` | No (default `0.0.0.0`) | Bind address |
+| `port` | `int` | No (default `8080`) | Bind port |
+
 ### Config
 
 ```python
@@ -159,6 +172,7 @@ Main configuration model that combines all configuration sections.
 | `mqtt` | `MqttConfig` | Yes | MQTT broker configuration |
 | `tesira` | `TesiraConfig` | Yes | Tesira device configuration |
 | `subscriptions` | `set[Subscription]` | Yes | Set of device subscriptions |
+| `health` | `HealthConfig` | No | HTTP probe listener (defaults if omitted) |
 
 #### Example
 

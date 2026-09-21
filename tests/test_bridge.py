@@ -21,7 +21,9 @@ CONFIG = "homeassistant/switch/03787145_Mic1_mute_1/config"
 
 @pytest.fixture
 async def bridge(
-    make_config: Callable[..., TesiraConfig], mqtt_conn: MqttConnection
+    make_config: Callable[..., TesiraConfig],
+    mqtt_conn: MqttConnection,
+    server: FakeTesiraServer,
 ) -> AsyncIterator[BiampTesiraConnection]:
     tesira = BiampTesiraConnection(make_config(), mqtt_conn)
 
@@ -33,6 +35,13 @@ async def bridge(
         running(tesira.run(ALL_SUBS)),
         running(mqtt_conn.run(on_command)),
     ):
+        await wait_until(
+            lambda: (
+                tesira.connected
+                and mqtt_conn.connected
+                and len(server.subscribe_commands()) == len(ALL_SUBS)
+            )
+        )
         yield tesira
     await tesira.close()
 
