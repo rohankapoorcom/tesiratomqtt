@@ -150,4 +150,4 @@ Single container (`Dockerfile`) reading `/config/config.yaml`. Needs network acc
 ---
 
 **Last Updated**: September 2026
-**Architecture Version**: 1.1.28
+**Architecture Version**: 1.1.29
