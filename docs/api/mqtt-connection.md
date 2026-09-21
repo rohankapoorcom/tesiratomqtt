@@ -107,4 +107,4 @@ async def main():
 ---
 
 **Last Updated**: September 2026
-**API Version**: 1.1.33
+**API Version**: 1.1.34
