@@ -33,7 +33,7 @@ jobs:
         id: bump
         # Pin to a PyPI-published release. @master tracks unreleased versions
         # (currently 1.5.2) that pip cannot install.
-        uses: callowayproject/bump-my-version@1.5.1
+        uses: callowayproject/bump-my-version@1.5.2
         with:
           args: patch
           github-token: ${{ secrets.GITHUB_TOKEN }}
