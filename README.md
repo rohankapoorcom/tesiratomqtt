@@ -13,6 +13,7 @@ Tesira2MQTT is a powerful MQTT bridge application that enables seamless control 
 - **Level Control**: Adjust audio levels for various input/output channels
 - **Mute Control**: Enable/disable mute functionality for audio channels
 - **Real-time Monitoring**: Subscribe to device state changes and publish updates
+- **Resilient**: Reconnects to the Tesira and the MQTT broker independently; a broker redeploy does not restart the app or disturb the Tesira
 - **Docker Support**: Easy deployment with containerized application
 - **Flexible Configuration**: YAML-based configuration with validation
 - **Asynchronous Operations**: High-performance async/await implementation
@@ -177,6 +178,8 @@ Solution:
 - Verify MQTT broker credentials and network connectivity
 - Check firewall settings
 - Ensure MQTT broker is running and accessible
+- Broker outages are not fatal: the app logs "MQTT connection lost" and
+  reconnects with backoff, republishing everything once the broker is back
 ```
 
 **Problem**: Cannot connect to Tesira device
@@ -291,7 +294,7 @@ scripts/test
 
 ### Tests
 
-The tests run offline against a fake Tesira (`tests/fake_tesira.py`) that reproduces the device's telnet quirks. Run them with `scripts/test`; pytest arguments pass through (`scripts/test -k reconnect -v`).
+The tests run offline against a fake Tesira (`tests/fake_tesira.py`) and an in-memory broker (`tests/fake_mqtt.py`). Run them with `scripts/test`; pytest arguments pass through (`scripts/test -k reconnect -v`).
 
 ### Code Structure
 
@@ -309,7 +312,10 @@ src/
     └── arguments.py      # Command line argument handling
 tests/
 ├── conftest.py          # Fixtures
+├── fake_mqtt.py         # In-memory stand-in for aiomqtt.Client
 ├── fake_tesira.py       # Fake Tesira TTP server
+├── test_bridge.py       # Both supervisors together
+├── test_mqtt.py
 ├── test_telnet.py
 └── test_tesira.py
 ```

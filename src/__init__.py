@@ -2,20 +2,18 @@
 
 import argparse
 import asyncio
-import json
 import logging
 import signal
 import sys
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
-import aiomqtt
 import yaml
 
 from _version import __version__
-from errors import ClientConnectionError, ClientError, ClientResponseError
-from models import Config, Subscription, TesiraConfig
-from mqtt_connection import AVAILABILITY_TOPIC, MqttConnection
+from errors import ClientError
+from models import Config
+from mqtt_connection import MqttConnection
 from tesira import BiampTesiraConnection
 from utils.arguments import EnvDefault
 
@@ -56,149 +54,63 @@ def load_config(config_file: str) -> Config:
         return Config(**yaml.safe_load(f))
 
 
-async def establish_tesira_connection(
-    tesira: TesiraConfig, subscriptions: set[Subscription], mqtt: MqttConnection
-) -> BiampTesiraConnection:
-    """Establish a connection to the Tesira device and create all subscriptions."""
-    connection = BiampTesiraConnection(tesira, mqtt)
-    await connection.open()
-    await connection.subscribe_all(subscriptions)
-    return connection
+async def supervise(name: str, start: Callable[[], Awaitable[None]]) -> None:
+    """Restart ``start()`` if it ever raises; only cancellation stops it."""
+    while True:
+        try:
+            await start()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _LOGGER.exception("%s loop crashed; restarting in %.0f seconds", name, 5.0)
+            await asyncio.sleep(5.0)
+        else:
+            return
 
 
-async def handle_exit(
-    mqtt: MqttConnection,
-    tesira: BiampTesiraConnection | None = None,
-    tasks: list[asyncio.Task] | None = None,
-) -> None:
-    """Gracefully exit by cancelling all long-running tasks."""
-    _LOGGER.info("Exiting gracefully")
+async def async_main(config: Config) -> None:
+    """Run Tesira2MQTT until SIGINT/SIGTERM."""
+    mqtt = MqttConnection(config.mqtt)
+    tesira = BiampTesiraConnection(config.tesira, mqtt)
 
-    # Publish offline status with timeout to ensure delivery
+    async def on_command(key: str, value: str) -> None:
+        try:
+            await tesira.update_state_and_command(key, value)
+        except ClientError as err:
+            _LOGGER.warning("Failed to apply %s to %s: %s", value, key, err)
+
+    async def run_tesira() -> None:
+        try:
+            await tesira.run(config.subscriptions)
+        except BaseException:
+            # Leave nothing half-open for the next attempt.
+            await tesira.close()
+            raise
+
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for signame in ("SIGINT", "SIGTERM"):
+        loop.add_signal_handler(getattr(signal, signame), stop.set)
+
+    tasks = [
+        asyncio.create_task(supervise("Tesira", run_tesira), name="tesira-supervisor"),
+        asyncio.create_task(
+            supervise("MQTT", lambda: mqtt.run(on_command)), name="mqtt-supervisor"
+        ),
+    ]
+    _LOGGER.info("Tesira2MQTT started")
+
     try:
-        await asyncio.wait_for(mqtt.publish_status("offline"), timeout=5.0)
-        _LOGGER.info("Offline status published successfully")
-    except TimeoutError:
-        _LOGGER.warning(
-            "Timeout publishing offline status - message may not be delivered"
-        )
-    except Exception:
-        _LOGGER.exception("Failed to publish offline status")
-
-    # Cancel all tasks if they exist
-    if tasks:
+        await stop.wait()
+    finally:
+        _LOGGER.info("Exiting gracefully")
+        await mqtt.close()
+        await tesira.close()
         for task in tasks:
             task.cancel()
-
-    # Close Tesira connection if it exists
-    if tesira:
-        try:
-            await tesira.close()
-        except Exception:
-            _LOGGER.exception("Error closing Tesira connection")
-
-
-async def listen_to_incoming_mqtt_messages(
-    barrier: asyncio.Barrier,
-    mqtt_client: aiomqtt.Client,
-    tesira_connection: BiampTesiraConnection,
-) -> None:
-    """Infinitely process incoming MQTT messages."""
-    _LOGGER.info("Starting MQTT subscription reading loop")
-    await barrier.wait()
-    async for message in mqtt_client.messages:
-        decoded_payload: str = message.payload.decode("utf-8")  # type: ignore  # noqa: PGH003
-        _LOGGER.debug("%s - Received MQTT message: %s", message.topic, decoded_payload)
-        parts = message.topic.value.split("/")
-        if len(parts) < 2:  # noqa: PLR2004
-            _LOGGER.warning("Ignoring message on unexpected topic %s", message.topic)
-            continue
-        try:
-            await tesira_connection.update_state_and_command(parts[1], decoded_payload)
-        except ClientError as err:
-            _LOGGER.warning(
-                "Failed to apply %s to %s: %s", decoded_payload, parts[1], err
-            )
-
-
-async def async_main() -> None:
-    """Run Tesira2MQTT."""
-    mqtt_client = aiomqtt.Client(
-        hostname=config.mqtt.server,
-        port=config.mqtt.port,
-        username=config.mqtt.user,
-        password=config.mqtt.password,
-        keepalive=config.mqtt.keepalive,
-        will=aiomqtt.Will(
-            topic=AVAILABILITY_TOPIC.format(config.mqtt.base_topic),
-            payload=json.dumps({"state": "offline"}),
-            retain=True,
-        ),
-    )
-
-    async with mqtt_client:  # noqa: SIM117
-        async with asyncio.TaskGroup() as tg:
-            mqtt_connection = MqttConnection(mqtt_client, config.mqtt.base_topic)
-            try:
-                tesira_connection = await establish_tesira_connection(
-                    config.tesira, config.subscriptions, mqtt_connection
-                )
-            except (ClientConnectionError, ClientResponseError):
-                _LOGGER.exception("Failed to establish Tesira connection")
-                # Clean up: publish offline status and exit gracefully
-                await handle_exit(mqtt_connection, None, None)
-                # Allow time for message delivery before exiting
-                await asyncio.sleep(0.5)
-                sys.exit(1)
-
-            barrier = asyncio.Barrier(3)
-            tasks = []
-            tasks.append(
-                tg.create_task(tesira_connection.run(barrier, config.subscriptions))
-            )
-
-            tasks.append(
-                tg.create_task(
-                    listen_to_incoming_mqtt_messages(
-                        barrier, mqtt_client, tesira_connection
-                    )
-                )
-            )
-
-            # Create signal handlers with proper variable capture
-            def create_signal_handler(
-                mqtt: MqttConnection,
-                tesira: BiampTesiraConnection,
-                tasks: list[asyncio.Task],
-            ) -> Callable[[], None]:
-                """Create a signal handler that captures variables by value."""
-
-                async def signal_handler() -> None:
-                    """Handle signal by gracefully shutting down the application."""
-                    try:
-                        await handle_exit(mqtt, tesira, tasks)
-                    except Exception:
-                        _LOGGER.exception("Error during graceful shutdown")
-                        # Force exit if graceful shutdown fails
-                        sys.exit(1)
-
-                return signal_handler
-
-            for signame in ("SIGINT", "SIGTERM"):
-                handler = create_signal_handler(
-                    mqtt_connection, tesira_connection, tasks
-                )
-                asyncio.get_running_loop().add_signal_handler(
-                    getattr(signal, signame), lambda h=handler: asyncio.create_task(h())
-                )
-
-            # Publish online status after all tasks are created and ready
-            await mqtt_connection.publish_status()
-            await barrier.wait()
-            _LOGGER.info("Tesira2MQTT is ready")
-
-    for signame in ("SIGINT", "SIGTERM"):
-        asyncio.get_running_loop().remove_signal_handler(getattr(signal, signame))
+        await asyncio.gather(*tasks, return_exceptions=True)
+        for signame in ("SIGINT", "SIGTERM"):
+            loop.remove_signal_handler(getattr(signal, signame))
 
 
 if __name__ == "__main__":
@@ -209,5 +121,4 @@ if __name__ == "__main__":
         force=True,
     )
     _LOGGER.info("Tesira2MQTT version %s", __version__)
-    config = load_config(args.config)
-    asyncio.run(async_main())
+    asyncio.run(async_main(load_config(args.config)))

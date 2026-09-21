@@ -2,252 +2,109 @@
 
 ## Overview
 
-The `MqttConnection` class manages all MQTT broker communications, including publishing device states, Home Assistant discovery messages, and availability status.
+`MqttConnection` (`src/mqtt_connection.py`) owns the connection to the MQTT broker. It keeps the latest entry for every subscribed control so that after a broker outage (for example a blue/green redeploy) it can republish availability, discovery, command subscriptions and state without involving the Tesira.
+
+## How it works
+
+`run()` holds an `aiomqtt.Client` open and reconnects with exponential backoff (1 s to 60 s) whenever the connection drops. On every (re)connect it:
+
+1. publishes `online` to `<base_topic>/availability` (retained; the last will is `offline`),
+2. for every stored entry: subscribes to `<base_topic>/<identifier>/set`, publishes the Home Assistant discovery message, then the state and attributes.
+
+`publish_state()` stores the entry and publishes it if connected. While disconnected it only stores, and never raises, so the Tesira side keeps running through an outage; the latest values are flushed on reconnect.
+
+Incoming messages on `<base_topic>/<identifier>/set` are passed to the command handler given to `run()`. Handler errors are logged, not fatal.
 
 ## Class: MqttConnection
 
 ```python
-class MqttConnection:
-    """MqttConnection used for communication with MQTT."""
+def __init__(self, config: MqttConfig) -> None
 ```
 
-### Constructor
+No connection is made until `run()`.
 
-```python
-def __init__(self, client: aiomqtt.Client, base_topic: str) -> None:
-    """Initialize an object to manage MQTT communications."""
-```
+### Properties
 
-**Parameters:**
-- `client` (aiomqtt.Client): The MQTT client instance for broker communication
-- `base_topic` (str): Base topic prefix for all MQTT messages
-
-**Example:**
-```python
-import aiomqtt
-from mqtt_connection import MqttConnection
-
-async with aiomqtt.Client("mqtt.broker.com") as client:
-    mqtt_conn = MqttConnection(client, "tesira2mqtt")
-```
+- `connected: bool` – broker currently connected.
 
 ### Methods
 
-#### publish_status()
+#### run(on_command)
 
-```python
-async def publish_status(self, status: str = "online") -> None:
-    """Indicate that the server is available."""
-```
+Stays connected until `close()`. `on_command(identifier, payload)` is awaited for each `set` message. The entry point runs this as a long-lived task.
 
-Publishes the availability status of the Tesira2MQTT service to the MQTT broker.
+#### close()
 
-**Parameters:**
-- `status` (str, optional): Availability status. Defaults to "online". Use "offline" for shutdown.
+Publishes `offline` (if connected) and makes `run()` return.
 
-**MQTT Topic:** `{base_topic}/availability`
+#### wait_connected()
 
-**Payload:** JSON object with state information
+Waits until the broker is connected.
+
+#### publish_state(name, data, serial)
+
+Stores the entry (see the state store in [Tesira Connection](tesira-connection.md)) and, if connected, publishes:
+
+- `<base_topic>/<identifier>/state` – JSON value, retained, QoS 2
+- `<base_topic>/<identifier>/attributes` – the entry, retained, QoS 2
+- `homeassistant/<switch|number>/<unique_id>/config` – on the first publish of an identifier per connection
+
+Never raises.
+
+#### publish_status(status="online")
+
+Publishes `{"state": <status>}` to `<base_topic>/availability` (retained). Raises `aiomqtt.MqttError` if not connected.
+
+## Discovery message
+
 ```json
-{"state": "online"}
-```
-
-**Example:**
-```python
-# Publish online status
-await mqtt_conn.publish_status("online")
-
-# Publish offline status during shutdown
-await mqtt_conn.publish_status("offline")
-```
-
-#### publish_state()
-
-```python
-async def publish_state(self, name: str, data: dict, serial: str) -> None:
-    """Publish the state of an object."""
-```
-
-Publishes the current state of a Tesira device attribute to the MQTT broker.
-
-**Parameters:**
-- `name` (str): Display name of the attribute (e.g., "Level", "Mute")
-- `data` (dict): State data containing device information
-- `serial` (str): Unique identifier for the device/attribute combination
-
-**Data Structure:**
-```python
-data = {
-    "state": "50",           # Current state value
-    "identifier": "unique_id", # Unique identifier
-    "device_name": "Office Speakers PC",  # Device name
-    "attribute": "level",    # Attribute type
-    "instance_tag": "OfficeSpeakersPCLevel"  # Tesira instance tag
+{
+  "dev": {"ids": "tesira2mqtt_03787145_Mic1", "name": "Mic 1", "mf": "Biamp Systems, LLC", "sn": "03787145"},
+  "origin": {"name": "Tesira2MQTT"},
+  "availability": [{"topic": "tesira2mqtt/availability", "value_template": "{{ value_json.state }}"}],
+  "name": "Mute",
+  "state_topic": "tesira2mqtt/Mic1_mute_1/state",
+  "command_topic": "tesira2mqtt/Mic1_mute_1/set",
+  "unique_id": "03787145_Mic1_mute_1",
+  "value_template": "{{ value_json }}",
+  "default_entity_id": "switch.mic_1_mute",
+  "payload_on": true,
+  "payload_off": false
 }
 ```
 
-**MQTT Topics Published:**
-- State: `{base_topic}/{identifier}/state`
-- Attributes: `{base_topic}/{identifier}/attributes`
+`level` controls become `number` entities with `min`/`max` from the block's `minLevel`/`maxLevel`, `step: 0.1` and `unit_of_measurement: dB`.
 
-**Example:**
-```python
-data = {
-    "state": "75",
-    "identifier": "office_speakers_pc_level",
-    "device_name": "Office Speakers PC",
-    "attribute": "level",
-    "instance_tag": "OfficeSpeakersPCLevel"
-}
+## Example
 
-await mqtt_conn.publish_state("Level", data, "office_speakers_pc_level")
-```
-
-#### publish_discovery()
-
-```python
-async def publish_discovery(self, name: str, data: dict, serial: str) -> None:
-    """Publish Home Assistant discovery message."""
-```
-
-Publishes Home Assistant discovery messages to automatically configure entities in Home Assistant.
-
-**Parameters:**
-- `name` (str): Display name of the attribute
-- `data` (dict): Discovery data containing entity configuration
-- `serial` (str): Unique identifier for the device
-
-**Discovery Data Structure:**
-```python
-data = {
-    "name": "Office Speakers PC Level",
-    "state_topic": "tesira2mqtt/office_speakers_pc_level/state",
-    "command_topic": "tesira2mqtt/office_speakers_pc_level/set",
-    "availability_topic": "tesira2mqtt/availability",
-    "device": {
-        "identifiers": ["tesira2mqtt_office_speakers_pc"],
-        "name": "Office Speakers PC",
-        "manufacturer": "Biamp Systems, LLC",
-        "model": "Tesira DSP"
-    },
-    "unique_id": "tesira2mqtt_office_speakers_pc_level"
-}
-```
-
-**MQTT Topic:** `homeassistant/{entity_type}/{unique_id}/config`
-
-**Entity Types:**
-- `number`: For level controls (0-100 range)
-- `switch`: For mute controls (on/off)
-
-**Example:**
-```python
-discovery_data = {
-    "name": "Office Speakers PC Level",
-    "state_topic": "tesira2mqtt/office_speakers_pc_level/state",
-    "command_topic": "tesira2mqtt/office_speakers_pc_level/set",
-    "availability_topic": "tesira2mqtt/availability",
-    "min": 0,
-    "max": 100,
-    "step": 1,
-    "unit_of_measurement": "%",
-    "device": {
-        "identifiers": ["tesira2mqtt_office_speakers_pc"],
-        "name": "Office Speakers PC",
-        "manufacturer": "Biamp Systems, LLC"
-    },
-    "unique_id": "tesira2mqtt_office_speakers_pc_level"
-}
-
-await mqtt_conn.publish_discovery("Level", discovery_data, "office_speakers_pc_level")
-```
-
-### Constants
-
-#### AVAILABILITY_TOPIC
-```python
-AVAILABILITY_TOPIC = "{0}/availability"
-```
-Template for availability topic. Use with `.format(base_topic)`.
-
-#### MANUFACTURER
-```python
-MANUFACTURER = "Biamp Systems, LLC"
-```
-Manufacturer name used in Home Assistant discovery messages.
-
-### Error Handling
-
-The MQTT connection handles various error conditions:
-
-- **Connection Errors**: Automatic reconnection attempts
-- **Publish Failures**: Logged with retry mechanisms
-- **Topic Validation**: Ensures valid MQTT topic formats
-- **Payload Validation**: Validates JSON payloads before publishing
-
-### Usage Examples
-
-#### Basic Setup
 ```python
 import asyncio
-import aiomqtt
+
+from models import MqttConfig
 from mqtt_connection import MqttConnection
 
+
 async def main():
-    async with aiomqtt.Client("mqtt.broker.com", port=1883) as client:
-        mqtt_conn = MqttConnection(client, "tesira2mqtt")
+    mqtt = MqttConnection(MqttConfig(base_topic="tesira2mqtt", server="broker", port=1883,
+                                     user="u", password="p", keepalive=60))
 
-        # Publish availability
-        await mqtt_conn.publish_status("online")
+    async def on_command(identifier: str, payload: str) -> None:
+        print(f"set {identifier} = {payload}")
 
-        # Publish device state
-        data = {
-            "state": "50",
-            "identifier": "test_device_level",
-            "device_name": "Test Device",
-            "attribute": "level",
-            "instance_tag": "TestDeviceLevel"
-        }
-        await mqtt_conn.publish_state("Level", data, "test_device_level")
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    task = asyncio.create_task(mqtt.run(on_command))
+    await mqtt.wait_connected()
+    try:
+        await asyncio.sleep(3600)
+    finally:
+        await mqtt.close()
+        await task
 ```
 
-#### Home Assistant Integration
-```python
-async def setup_home_assistant_entity(mqtt_conn, device_info):
-    # Publish discovery message
-    discovery_data = {
-        "name": f"{device_info['device_name']} {device_info['attribute'].title()}",
-        "state_topic": f"tesira2mqtt/{device_info['identifier']}/state",
-        "command_topic": f"tesira2mqtt/{device_info['identifier']}/set",
-        "availability_topic": "tesira2mqtt/availability",
-        "device": {
-            "identifiers": [f"tesira2mqtt_{device_info['device_name'].lower().replace(' ', '_')}"],
-            "name": device_info['device_name'],
-            "manufacturer": "Biamp Systems, LLC"
-        },
-        "unique_id": f"tesira2mqtt_{device_info['identifier']}"
-    }
+## Testing
 
-    entity_type = "number" if device_info['attribute'] == "level" else "switch"
-    await mqtt_conn.publish_discovery(
-        device_info['attribute'].title(),
-        discovery_data,
-        device_info['identifier']
-    )
-```
-
-### Best Practices
-
-1. **Topic Naming**: Use consistent, descriptive topic names
-2. **Retained Messages**: Use retained messages for state topics
-3. **QoS Levels**: Use QoS 2 for critical messages
-4. **Error Handling**: Always handle connection and publish errors
-5. **Availability**: Always publish availability status on startup/shutdown
+`tests/fake_mqtt.py` replaces `aiomqtt.Client` with an in-memory broker that can refuse or drop connections. `tests/test_mqtt.py` covers this class; `tests/test_bridge.py` runs it together with the Tesira connection.
 
 ---
 
-**Last Updated**: September 2025
+**Last Updated**: September 2026
 **API Version**: 1.1.29

@@ -220,13 +220,10 @@ class BiampTesiraConnection:
         self._command_channel.fail_pending(error)
         self._connection_lost.set()
 
-    async def run(
-        self, barrier: asyncio.Barrier, subscriptions: set[Subscription]
-    ) -> None:
+    async def run(self, subscriptions: set[Subscription]) -> None:
         """Reconnect and resubscribe on loss; refresh subscriptions on schedule."""
         _LOGGER.info("Starting Tesira supervisor loop")
         self._closing = False
-        await barrier.wait()
         backoff = _RECONNECT_BACKOFF_INITIAL
         while not self._closing:
             if not self.connected:

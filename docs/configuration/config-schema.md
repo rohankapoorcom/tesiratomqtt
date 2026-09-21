@@ -47,6 +47,7 @@ mqtt:
   user: string
   password: string
   keepalive: integer
+  client_id: string            # optional
 
 tesira:
   host: string
@@ -84,6 +85,7 @@ Controls MQTT broker connection and message publishing settings.
 | Field | Type | Default | Description | Example |
 |-------|------|---------|-------------|---------|
 | `keepalive` | `integer` | `60` | MQTT keepalive interval in seconds | `60` |
+| `client_id` | `string` | random | Fixed MQTT client id, useful for broker ACLs and session tracking | `tesira2mqtt` |
 
 #### Example
 

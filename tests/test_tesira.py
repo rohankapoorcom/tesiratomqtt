@@ -330,8 +330,7 @@ async def test_run_reconnects_and_resubscribes_after_loss(
 ) -> None:
     await connection.open()
     await connection.subscribe_all(ALL_SUBS)
-    barrier = asyncio.Barrier(1)
-    task = asyncio.create_task(connection.run(barrier, ALL_SUBS))
+    task = asyncio.create_task(connection.run(ALL_SUBS))
     try:
         await asyncio.sleep(0.05)
         server.drop_all_sessions()
@@ -358,8 +357,7 @@ async def test_run_retries_with_backoff_while_tesira_is_down(
 ) -> None:
     connection = await make_connection(command_timeout=0.2)
     await connection.open()
-    barrier = asyncio.Barrier(1)
-    task = asyncio.create_task(connection.run(barrier, {MUTE_SUB}))
+    task = asyncio.create_task(connection.run({MUTE_SUB}))
     try:
         await asyncio.sleep(0.05)
         server.silent = True  # new sessions never get a banner
@@ -387,8 +385,7 @@ async def test_run_resubscribes_on_schedule(
     connection = await make_connection(resubscription_time=0.1)
     await connection.open()
     await connection.subscribe(MUTE_SUB)
-    barrier = asyncio.Barrier(1)
-    task = asyncio.create_task(connection.run(barrier, {MUTE_SUB}))
+    task = asyncio.create_task(connection.run({MUTE_SUB}))
     try:
         await wait_until(lambda: len(server.subscribe_commands("Mic1_mute_1")) >= 3)
         assert connection.connected

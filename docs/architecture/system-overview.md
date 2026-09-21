@@ -31,19 +31,20 @@ Tesira2MQTT is a bidirectional MQTT bridge for Biamp Tesira DSPs. It subscribes 
 
 ### `src/__init__.py` – entry point
 
-Loads and validates `config.yaml`, connects to MQTT and the Tesira, creates the subscriptions, then runs two tasks in a `TaskGroup`:
+Loads and validates `config.yaml`, then runs two independent supervisor tasks:
 
-- `BiampTesiraConnection.run()` – Tesira supervisor.
-- `listen_to_incoming_mqtt_messages()` – applies `<base_topic>/<identifier>/set` messages to the Tesira. Rejected commands are logged, not fatal.
+- `BiampTesiraConnection.run()` – Tesira sessions and subscriptions.
+- `MqttConnection.run()` – broker connection; `set` messages are applied to the Tesira, rejected commands are logged.
 
-`SIGINT`/`SIGTERM` publish `offline`, cancel the tasks and close the sessions.
+Neither task's failure affects the other; an unexpected exception restarts that loop. `SIGINT`/`SIGTERM` publish `offline`, close the telnet sessions and stop both loops.
 
 ### `src/mqtt_connection.py` – MqttConnection
 
-- Publishes retained availability (`online`/`offline`) with a last-will `offline`.
-- `publish_state()` publishes `<base_topic>/<identifier>/state` and `/attributes` (retained, QoS 2). On first sight of an identifier it also publishes the Home Assistant discovery message to `homeassistant/<switch|number>/<unique_id>/config` and subscribes to the `set` topic.
+- Holds the `aiomqtt` client open and reconnects with exponential backoff on loss.
+- Keeps the latest entry per identifier. On every (re)connect it publishes `online`, subscribes to each `set` topic and republishes discovery, state and attributes for every entry, so a fresh broker (blue/green deploy) is fully repopulated.
+- `publish_state()` publishes `<base_topic>/<identifier>/state` and `/attributes` (retained, QoS 2) plus the discovery message on first sight; while disconnected it only stores the entry and never raises.
 
-aiomqtt does not reconnect on its own: if the broker connection drops the process exits and the orchestrator restarts it.
+See [MQTT Connection API](../api/mqtt-connection.md).
 
 ### `src/tesira.py` – BiampTesiraConnection
 
@@ -71,7 +72,7 @@ Load config ─► connect MQTT
   └─► open() : both sessions concurrently ─► banner ─► reader loops ─► DEVICE get serialNumber
   └─► subscribe_all() : per subscription (level: get minLevel/maxLevel) ─► subscribe
         └─► Tesira replies with current value ─► state store ─► MQTT state + discovery
-  └─► publish "online", start run() and the MQTT listener
+  └─► MQTT: connect ─► publish "online" ─► republish stored entries
 ```
 
 The Tesira sets sessions up one at a time at ~3 s each, so startup is dominated by ~6 s of session setup; subscriptions take milliseconds.
@@ -94,12 +95,21 @@ The Tesira sets sessions up one at a time at ~3 s each, so startup is dominated 
 Tesira then sends a publishToken update, which follows the path above.
 ```
 
-### Connection loss
+### Tesira connection loss
 
 ```
 EOF / command timeout / heartbeat failure
   └─► in-flight commands fail ─► run() tears down both sessions
         └─► open() + subscribe_all(), backoff 1 s → 60 s while unreachable
+```
+
+### MQTT connection loss
+
+```
+broker drops (last will publishes "offline")
+  └─► MqttConnection.run() reconnects, backoff 1 s → 60 s
+        └─► publish "online" ─► resubscribe set topics ─► republish discovery + latest state
+Tesira sessions and subscriptions are untouched; updates during the outage are kept in the store.
 ```
 
 ## MQTT Topic Layout
@@ -130,13 +140,12 @@ homeassistant/number/03787145_OfficeSpeakersPCLevel_level_1/config
 
 | Situation | Behaviour |
 |-----------|-----------|
-| Tesira unreachable at startup | `offline` published, exit 1. |
-| Tesira connection lost | `run()` reconnects and resubscribes. |
+| Tesira unreachable or connection lost | `run()` retries with backoff and resubscribes. |
 | Command times out | Connection rebuilt (a late reply would be matched to the next command). |
 | Subscription rejected | Logged and skipped. |
 | MQTT command rejected | Logged. |
 | MQTT publish fails in reader loop | Logged. |
-| MQTT broker connection lost | Process exits; orchestrator restarts it. |
+| MQTT broker connection lost | `MqttConnection.run()` reconnects and republishes everything; Tesira untouched. |
 | Invalid configuration | Exit at startup. |
 
 ## Deployment
@@ -145,7 +154,7 @@ Single container (`Dockerfile`) reading `/config/config.yaml`. Needs network acc
 
 ## Testing
 
-`tests/fake_tesira.py` is a fake Tesira server; `tests/` covers the telnet wrapper and the connection (echo, line endings, interleaving, timeouts, disconnects, reconnect/resubscribe). Run with `scripts/test`.
+`tests/fake_tesira.py` and `tests/fake_mqtt.py` stand in for the device and the broker; `tests/test_bridge.py` runs both supervisors together through Tesira and MQTT outages. Run with `scripts/test`.
 
 ---
 
