@@ -7,7 +7,8 @@ from typing import Any
 
 import pytest
 
-from conftest import running, wait_until
+import mqtt_connection
+from conftest import MQTT_CONFIG, running, wait_until
 from errors import ClientError
 from fake_mqtt import FakeBroker
 from mqtt_connection import MqttConnection
@@ -173,6 +174,50 @@ async def test_set_message_is_passed_to_handler(
         await broker.inject("t2m/Mic1_mute_1/state", "junk")
         await asyncio.sleep(0.05)
         assert len(handler.calls) == 2
+
+
+async def test_nested_base_topic_commands_are_parsed(
+    broker: FakeBroker, handler: Handler
+) -> None:
+    conn = MqttConnection(MQTT_CONFIG.model_copy(update={"base_topic": "bldg/t2m"}))
+    async with running(conn.run(handler)):
+        await conn.wait_connected()
+        await conn.publish_state("Mute", entry(), SERIAL)
+        assert broker.current is not None
+        assert broker.current.subscriptions == ["bldg/t2m/Mic1_mute_1/set"]
+
+        await broker.inject("bldg/t2m/Mic1_mute_1/set", "true")
+        await wait_until(lambda: handler.calls == [("Mic1_mute_1", "true")])
+
+        await broker.inject("bldg/t2m/set", "x")
+        await broker.inject("bldg/t2m/a/b/set", "x")
+        await asyncio.sleep(0.05)
+        assert len(handler.calls) == 1
+    await conn.close()
+
+
+async def test_undecodable_payload_is_ignored(
+    mqtt_conn: MqttConnection, broker: FakeBroker, handler: Handler
+) -> None:
+    async with running(mqtt_conn.run(handler)) as task:
+        await mqtt_conn.wait_connected()
+        assert broker.current is not None
+        await broker.current.deliver_raw("t2m/Mic1_mute_1/set", b"\xff\xfe")
+        await broker.inject("t2m/Mic1_mute_1/set", "true")
+        await wait_until(lambda: handler.calls == [("Mic1_mute_1", "true")])
+        assert not task.done()
+
+
+async def test_close_during_backoff_returns_promptly(
+    broker: FakeBroker, handler: Handler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(mqtt_connection, "_RECONNECT_BACKOFF_INITIAL", 30.0)
+    broker.refuse = True
+    conn = MqttConnection(MQTT_CONFIG)
+    task = asyncio.create_task(conn.run(handler))
+    await asyncio.sleep(0.05)
+    await conn.close()
+    await asyncio.wait_for(task, 1)
 
 
 async def test_close_publishes_offline_and_stops(

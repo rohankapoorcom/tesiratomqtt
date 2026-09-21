@@ -46,6 +46,9 @@ class MqttConnection:
         self._announced: set[str] = set()
         self._connected = asyncio.Event()
         self._stop = asyncio.Event()
+        # Serialises the reconnect replay with live publishes so a stale
+        # snapshot can never overwrite a newer value.
+        self._publish_lock = asyncio.Lock()
 
     @property
     def connected(self) -> bool:
@@ -79,6 +82,8 @@ class MqttConnection:
         while not self._stop.is_set():
             try:
                 async with self._make_client() as client:
+                    if self._stop.is_set():
+                        break
                     try:
                         await self._on_connect(client)
                         backoff = _RECONNECT_BACKOFF_INITIAL
@@ -92,7 +97,8 @@ class MqttConnection:
                 _LOGGER.warning(
                     "MQTT connection lost (%s); retrying in %.0f seconds", err, backoff
                 )
-                await asyncio.sleep(backoff)
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(self._stop.wait(), backoff)
                 backoff = min(backoff * 2, _RECONNECT_BACKOFF_MAX)
 
     async def _serve(self, client: aiomqtt.Client, on_command: CommandHandler) -> None:
@@ -131,28 +137,41 @@ class MqttConnection:
         self._client = client
         self._announced.clear()
         await self.publish_status("online")
-        for name, data, serial in list(self._entries.values()):
-            await self._publish_entry(name, data, serial)
+        async with self._publish_lock:
+            for identifier in list(self._entries):
+                await self._publish_entry(*self._entries[identifier])
         self._connected.set()
         _LOGGER.info("Republished %d entities to MQTT", len(self._entries))
 
     async def _handle_message(
         self, message: aiomqtt.Message, on_command: CommandHandler
     ) -> None:
-        payload = (
-            message.payload.decode("utf-8")
-            if isinstance(message.payload, bytes)
-            else str(message.payload)
-        )
+        try:
+            payload = (
+                message.payload.decode("utf-8")
+                if isinstance(message.payload, bytes)
+                else str(message.payload)
+            )
+        except UnicodeDecodeError:
+            _LOGGER.warning("Ignoring undecodable message on %s", message.topic)
+            return
         _LOGGER.debug("%s - Received MQTT message: %s", message.topic, payload)
-        parts = message.topic.value.split("/")
-        if len(parts) != 3 or parts[2] != "set":  # noqa: PLR2004
+        identifier = self._command_identifier(message.topic.value)
+        if identifier is None:
             _LOGGER.warning("Ignoring message on unexpected topic %s", message.topic)
             return
         try:
-            await on_command(parts[1], payload)
+            await on_command(identifier, payload)
         except Exception:
-            _LOGGER.exception("Failed to apply %s to %s", payload, parts[1])
+            _LOGGER.exception("Failed to apply %s to %s", payload, identifier)
+
+    def _command_identifier(self, topic: str) -> str | None:
+        """Return the identifier from ``<base_topic>/<identifier>/set``."""
+        prefix, suffix = f"{self._base_topic}/", "/set"
+        if not (topic.startswith(prefix) and topic.endswith(suffix)):
+            return None
+        identifier = topic[len(prefix) : -len(suffix)]
+        return identifier if identifier and "/" not in identifier else None
 
     async def publish_status(self, status: str = "online") -> None:
         """Publish the availability topic."""
@@ -175,7 +194,8 @@ class MqttConnection:
             _LOGGER.debug("MQTT disconnected; deferring state for %s", identifier)
             return
         try:
-            await self._publish_entry(name, data, serial)
+            async with self._publish_lock:
+                await self._publish_entry(name, data, serial)
         except aiomqtt.MqttError as err:
             _LOGGER.warning("Failed to publish %s (%s); will retry", identifier, err)
 

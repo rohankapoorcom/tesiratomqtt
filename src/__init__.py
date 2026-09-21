@@ -79,16 +79,21 @@ async def async_main(config: Config) -> None:
         except ClientError as err:
             _LOGGER.warning("Failed to apply %s to %s: %s", value, key, err)
 
+    async def run_tesira() -> None:
+        try:
+            await tesira.run(config.subscriptions)
+        except BaseException:
+            # Leave nothing half-open for the next attempt.
+            await tesira.close()
+            raise
+
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for signame in ("SIGINT", "SIGTERM"):
         loop.add_signal_handler(getattr(signal, signame), stop.set)
 
     tasks = [
-        asyncio.create_task(
-            supervise("Tesira", lambda: tesira.run(config.subscriptions)),
-            name="tesira-supervisor",
-        ),
+        asyncio.create_task(supervise("Tesira", run_tesira), name="tesira-supervisor"),
         asyncio.create_task(
             supervise("MQTT", lambda: mqtt.run(on_command)), name="mqtt-supervisor"
         ),

@@ -81,13 +81,11 @@ class FakeClient:
         self._queue.put_nowait(aiomqtt.MqttError("connection lost"))
 
     async def deliver(self, topic: str, payload: str) -> None:
+        await self.deliver_raw(topic, payload.encode())
+
+    async def deliver_raw(self, topic: str, payload: bytes) -> None:
         message = aiomqtt.Message(
-            topic=topic,
-            payload=payload.encode(),
-            qos=0,
-            retain=False,
-            mid=0,
-            properties=None,
+            topic=topic, payload=payload, qos=0, retain=False, mid=0, properties=None
         )
         await self._queue.put(message)
 

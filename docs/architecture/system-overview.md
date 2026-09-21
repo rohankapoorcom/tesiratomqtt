@@ -140,8 +140,7 @@ homeassistant/number/03787145_OfficeSpeakersPCLevel_level_1/config
 
 | Situation | Behaviour |
 |-----------|-----------|
-| Tesira unreachable at startup | `offline` published, exit 1. |
-| Tesira connection lost | `run()` reconnects and resubscribes. |
+| Tesira unreachable or connection lost | `run()` retries with backoff and resubscribes. |
 | Command times out | Connection rebuilt (a late reply would be matched to the next command). |
 | Subscription rejected | Logged and skipped. |
 | MQTT command rejected | Logged. |
