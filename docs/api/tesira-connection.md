@@ -58,7 +58,7 @@ Stops background tasks, closes both sessions and fails in-flight commands with `
 
 Returns once the connection has been lost or closed.
 
-#### run(barrier, subscriptions)
+#### run(subscriptions)
 
 Supervises the connection until cancelled: opens and subscribes (with exponential backoff, 1 s to 60 s, while the device is unavailable), reconnects on loss, and calls `subscribe_all()` every `resubscription_time` seconds. The entry point runs this as a long-lived task.
 
@@ -131,8 +131,6 @@ MQTT publish failures inside the reader loop are logged and do not affect the co
 ## Example
 
 ```python
-import asyncio
-
 from models import Subscription, TesiraConfig
 from tesira import BiampTesiraConnection
 
@@ -157,7 +155,7 @@ async def main(mqtt_conn):
     await tesira_conn.update_state_and_command("OfficeSpeakersPCLevel_level_1", "-6")
 
     try:
-        await tesira_conn.run(asyncio.Barrier(1), subscriptions)
+        await tesira_conn.run(subscriptions)
     finally:
         await tesira_conn.close()
 ```

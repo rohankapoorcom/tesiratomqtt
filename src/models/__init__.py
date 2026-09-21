@@ -14,6 +14,7 @@ class MqttConfig(BaseModel):
     user: str
     password: str
     keepalive: int
+    client_id: str | None = None
 
 
 class TesiraConfig(BaseModel):

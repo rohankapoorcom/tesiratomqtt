@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 import pytest
 
+import mqtt_connection
+from fake_mqtt import FakeBroker
 from fake_tesira import Block, FakeTesiraServer
-from models import Subscription, TesiraConfig
+from models import MqttConfig, Subscription, TesiraConfig
+from mqtt_connection import MqttConnection
 from tesira import BiampTesiraConnection
 
 
@@ -34,6 +38,19 @@ class FakeMqtt:
 
     def last_state(self, identifier: str) -> Any:
         return self.states_for(identifier)[-1]
+
+
+@contextlib.asynccontextmanager
+async def running(coro: Awaitable[Any]) -> AsyncIterator[asyncio.Task]:
+    """Run ``coro`` as a task for the duration of the block."""
+    task = asyncio.ensure_future(coro)
+    try:
+        yield task
+    finally:
+        if not task.done():
+            task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
 
 async def wait_until(
@@ -65,6 +82,35 @@ async def server() -> AsyncIterator[FakeTesiraServer]:
 @pytest.fixture
 def mqtt() -> FakeMqtt:
     return FakeMqtt()
+
+
+@pytest.fixture
+def broker(monkeypatch: pytest.MonkeyPatch) -> FakeBroker:
+    """In-memory broker standing in for aiomqtt.Client, with fast reconnects."""
+    fake = FakeBroker()
+    monkeypatch.setattr(mqtt_connection.aiomqtt, "Client", fake.client_factory)
+    monkeypatch.setattr(mqtt_connection, "_RECONNECT_BACKOFF_INITIAL", 0.05)
+    return fake
+
+
+MQTT_CONFIG = MqttConfig(
+    base_topic="t2m",
+    server="broker",
+    port=1883,
+    user="u",
+    password="p",  # noqa: S106
+    keepalive=60,
+    client_id="tesira2mqtt-test",
+)
+
+
+@pytest.fixture
+async def mqtt_conn(
+    broker: FakeBroker,  # noqa: ARG001 - patches aiomqtt.Client
+) -> AsyncIterator[MqttConnection]:
+    conn = MqttConnection(MQTT_CONFIG)
+    yield conn
+    await conn.close()
 
 
 @pytest.fixture

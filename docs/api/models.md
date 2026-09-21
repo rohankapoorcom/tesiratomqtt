@@ -25,6 +25,7 @@ Configuration model for MQTT broker connection settings.
 | `user` | `str` | Yes | MQTT broker username |
 | `password` | `str` | Yes | MQTT broker password |
 | `keepalive` | `int` | Yes | MQTT keepalive interval in seconds |
+| `client_id` | `str \| None` | No (default `None`) | Fixed MQTT client id; a random one is generated if unset |
 
 #### Example
 
