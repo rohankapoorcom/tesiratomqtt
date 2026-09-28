@@ -1,41 +1,53 @@
-FROM python:3.13-alpine
+# syntax=docker/dockerfile:1
 
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
+# The runtime image requires `docker login dhi.io` (Docker Hub credentials).
+# Both stages are built on Docker Hardened Images for the same Python version,
+# so the venv's interpreter symlinks resolve in the runtime image.
+ARG PYTHON_VERSION=3.14
+
+## -----------------------------------------------------
+## Build stage: Astral's uv image on the hardened Python runtime. It has no
+## shell, so RUN instructions must use exec form.
+FROM ghcr.io/astral-sh/uv:0.12.19-python${PYTHON_VERSION}-dhi AS build
+
+# The image has no passwd entry for root, so use the numeric UID.
+USER 0
+
+# Use the image's Python rather than a uv-managed download, which would not
+# exist in the runtime stage.
+ENV UV_PYTHON_DOWNLOADS=0 \
+    UV_CACHE_DIR=/root/.cache/uv \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PROJECT_ENVIRONMENT=/app/venv
 
 WORKDIR /app
 
-# Create a non-privileged user that the app will run under.
-# See https://docs.docker.com/go/dockerfile-user-best-practices/
-ARG UID=10001
-RUN adduser \
-    --disabled-password \
-    --gecos "" \
-    --home "/nonexistent" \
-    --shell "/sbin/nologin" \
-    --no-create-home \
-    --uid "${UID}" \
-    appuser
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+    --mount=type=bind,source=uv.lock,target=uv.lock \
+    ["uv", "sync", "--locked", "--no-dev"]
 
-# Download dependencies as a separate step to take advantage of Docker's caching.
-# Leverage a cache mount to /root/.cache/pip to speed up subsequent builds.
-# Leverage a bind mount to requirements.txt to avoid having to copy them into
-# into this layer.
-RUN --mount=type=cache,target=/root/.cache/pip \
-    --mount=type=bind,source=requirements.txt,target=requirements.txt \
-    python -m pip install -r requirements.txt
+## -----------------------------------------------------
+## Runtime stage: no shell or package manager, runs as nonroot (UID 65532).
+FROM dhi.io/python:${PYTHON_VERSION}-debian13
 
-# Switch to the non-privileged user to run the application.
-USER appuser
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PATH="/app/venv/bin:$PATH"
 
-# Copy the source code into the container.
+WORKDIR /app
+
+COPY --from=build /app/venv /app/venv
 COPY src .
+
+USER 65532
 
 ENV HEALTHCHECK_URL=http://127.0.0.1:8080/health
 EXPOSE 8080
+# Exec form is required: the runtime image has no /bin/sh.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \
-    CMD python -c "import os,urllib.request; urllib.request.urlopen(os.environ['HEALTHCHECK_URL'])"
+    CMD ["python", "-c", "import os,urllib.request; urllib.request.urlopen(os.environ['HEALTHCHECK_URL'])"]
 
-# Run the application.
 ENTRYPOINT ["python", "__init__.py"]
 CMD ["--config", "/config/config.yaml"]
