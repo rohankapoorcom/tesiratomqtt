@@ -5,8 +5,8 @@ import asyncio
 import logging
 import signal
 import sys
-from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import yaml
 
@@ -17,6 +17,9 @@ from models import Config
 from mqtt_connection import MqttConnection
 from tesira import BiampTesiraConnection
 from utils.arguments import EnvDefault
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 _LOGGER = logging.getLogger(__name__)
 

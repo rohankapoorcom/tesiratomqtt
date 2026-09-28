@@ -76,7 +76,7 @@ class Session:
                 self._strip_iac()
                 for line in self._pop_lines():
                     await self._handle_line(line)
-        except (ConnectionError, asyncio.IncompleteReadError, asyncio.CancelledError):
+        except ConnectionError, asyncio.IncompleteReadError, asyncio.CancelledError:
             return
         finally:
             self.close()
@@ -221,7 +221,7 @@ class Session:
                 await self.send_line("+OK")
             else:
                 await self.send_line(f"-ERR '{verb}' is not supported")
-        except (KeyError, IndexError, ValueError):
+        except KeyError, IndexError, ValueError:
             await self.send_line(f"-ERR '{attribute}' is not supported by {tag}")
 
 

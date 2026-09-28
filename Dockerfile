@@ -3,7 +3,7 @@
 # The runtime image requires `docker login dhi.io` (Docker Hub credentials).
 # Both stages are built on Docker Hardened Images for the same Python version,
 # so the venv's interpreter symlinks resolve in the runtime image.
-ARG PYTHON_VERSION=3.13
+ARG PYTHON_VERSION=3.14
 
 ## -----------------------------------------------------
 ## Build stage: Astral's uv image on the hardened Python runtime. It has no
