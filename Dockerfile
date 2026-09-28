@@ -6,19 +6,24 @@
 ARG PYTHON_TAG=3.13-alpine
 
 ## -----------------------------------------------------
-## Build stage: the -dev variant has a shell and pip and runs as root.
+## Build stage: the -dev variant has a shell and runs as root.
 FROM dhi.io/python:${PYTHON_TAG}-dev AS build
 
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
+COPY --from=ghcr.io/astral-sh/uv:0.12.19 /uv /bin/uv
 
-RUN python -m venv /app/venv
+# Use the image's Python rather than a uv-managed download, which would not
+# exist in the runtime stage.
+ENV UV_PYTHON_DOWNLOADS=0 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PROJECT_ENVIRONMENT=/app/venv
 
-# Leverage a cache mount to /root/.cache/pip to speed up subsequent builds.
-# Leverage a bind mount to requirements.txt to avoid copying it into this layer.
-RUN --mount=type=cache,target=/root/.cache/pip \
-    --mount=type=bind,source=requirements.txt,target=requirements.txt \
-    /app/venv/bin/pip install -r requirements.txt
+WORKDIR /app
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+    --mount=type=bind,source=uv.lock,target=uv.lock \
+    uv sync --locked --no-dev
 
 ## -----------------------------------------------------
 ## Runtime stage: no shell or package manager, runs as nonroot (UID 65532).

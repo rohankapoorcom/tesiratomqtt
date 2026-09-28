@@ -49,11 +49,12 @@ Use [black](https://github.com/ambv/black) to make sure the code follows the sty
 ## Test your code modification
 
 Open the repository in the dev container (`.devcontainer.json`) or run
-`scripts/setup` in a virtual environment, then run `scripts/test`.
+`scripts/setup` (which uses [uv](https://docs.astral.sh/uv/) to create
+`.venv`), then run `scripts/test`.
 
 The tests need no hardware or broker: `tests/fake_tesira.py` emulates the
 Tesira and MQTT is stubbed. Against a real device,
-`python src/__init__.py --config config.yaml --loglevel debug` logs every line
+`uv run src/__init__.py --config config.yaml --loglevel debug` logs every line
 exchanged.
 
 ## License

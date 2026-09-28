@@ -78,15 +78,15 @@ docker run -d \
 git clone https://github.com/rohankapoorcom/tesiratomqtt.git
 cd tesiratomqtt
 
-# Install dependencies
-pip install -r requirements.txt
+# Install dependencies (requires uv: https://docs.astral.sh/uv/)
+uv sync --no-dev
 
 # Copy and customize configuration
 cp config.yaml.example config.yaml
 # Edit config.yaml with your MQTT broker and Tesira device details
 
 # Run the application
-python -m src
+uv run python -m src
 ```
 
 ## ⚙️ Configuration
@@ -291,12 +291,8 @@ The easiest way to get started with development is using VSCode Dev Containers:
 git clone https://github.com/rohankapoorcom/tesiratomqtt.git
 cd tesiratomqtt
 
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install runtime and development dependencies
-pip install -r requirements-dev.txt
+# Create .venv and install runtime and development dependencies
+uv sync
 
 # Run linting
 scripts/lint
