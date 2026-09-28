@@ -30,17 +30,18 @@ class MqttConnection:
     """
     Supervised MQTT connection.
 
-    Keeps the latest entry for every subscription so that after a broker
-    reconnect availability, discovery, command subscriptions and state can all
-    be republished. ``publish_state`` never raises: while disconnected the
-    entry is stored and flushed on reconnect.
+    Keeps the last delivered entry for every subscription so that after a
+    broker reconnect availability, discovery, command subscriptions and state
+    can all be republished. ``publish_state`` never raises. It returns False
+    when the state was not delivered (disconnected or rejected); the caller
+    keeps the value and retries, so it can drop values that go out of date.
     """
 
     def __init__(self, config: MqttConfig) -> None:
         """Initialise; no connection is made until ``run()``."""
         self._config = config
         self._base_topic = config.base_topic
-        self._qos = 2
+        self._qos = 1
         self._client: aiomqtt.Client | None = None
         self._entries: dict[str, tuple[str, dict[str, Any], str]] = {}
         self._announced: set[str] = set()
@@ -134,10 +135,12 @@ class MqttConnection:
         _LOGGER.info(
             "Connected to MQTT at %s:%s", self._config.server, self._config.port
         )
-        self._client = client
-        self._announced.clear()
-        await self.publish_status("online")
         async with self._publish_lock:
+            # Inside the lock so a publish still running on the previous client
+            # cannot mark an identifier announced after this reset.
+            self._client = client
+            self._announced.clear()
+            await self.publish_status("online")
             for identifier in list(self._entries):
                 await self._publish_entry(*self._entries[identifier])
         self._connected.set()
@@ -186,23 +189,25 @@ class MqttConnection:
             qos=self._qos,
         )
 
-    async def publish_state(self, name: str, data: dict, serial: str) -> None:
-        """Store the latest state and publish it if connected."""
+    async def publish_state(self, name: str, data: dict, serial: str) -> bool:
+        """Publish a state; return whether it reached the broker."""
         identifier: str = data["identifier"]
-        self._entries[identifier] = (name, data, serial)
-        if self._client is None:
-            _LOGGER.debug("MQTT disconnected; deferring state for %s", identifier)
-            return
         try:
             async with self._publish_lock:
+                if self._client is None:
+                    _LOGGER.debug("MQTT disconnected; not publishing %s", identifier)
+                    return False
                 await self._publish_entry(name, data, serial)
         except aiomqtt.MqttError as err:
             _LOGGER.warning("Failed to publish %s (%s); will retry", identifier, err)
+            return False
+        return True
 
     async def _publish_entry(self, name: str, data: dict, serial: str) -> None:
         client = self._client
         if client is None:
-            return
+            msg = "MQTT not connected"
+            raise aiomqtt.MqttError(msg)
         identifier: str = data["identifier"]
         topic_name = f"{data['device_name']} {name}"
         topic_state = f"{self._base_topic}/{identifier}/state"
@@ -212,6 +217,7 @@ class MqttConnection:
             await self._publish_discovery(
                 client, name, data, serial, topic_state, topic_name
             )
+            await self._clear_legacy_topics(client, data)
             self._announced.add(identifier)
 
         _LOGGER.debug(
@@ -223,6 +229,7 @@ class MqttConnection:
             retain=True,
             qos=self._qos,
         )
+        self._entries[identifier] = (name, data, serial)
         await client.publish(
             topic=topic_attributes, payload=json.dumps(data), retain=True, qos=self._qos
         )
@@ -283,8 +290,26 @@ class MqttConnection:
         slug = slugify.slugify(topic_name, separator="_")
         payload["default_entity_id"] = f"{ha_type}.{slug}"
 
-        topic_config = f"homeassistant/{ha_type}/{data['unique_id']}/config"
+        object_id = f"{serial}_{identifier}"
+        topic_config = f"homeassistant/{ha_type}/{object_id}/config"
+        legacy_id = data["unique_id"]
+        if legacy_id != object_id:
+            legacy_config = f"homeassistant/{ha_type}/{legacy_id}/config"
+            _LOGGER.info("Clearing previous discovery topic %s", legacy_config)
+            await client.publish(
+                topic=legacy_config, payload="", retain=True, qos=self._qos
+            )
         _LOGGER.info("Publishing discovery info for %s", identifier)
         await client.publish(
             topic=topic_config, payload=json.dumps(payload), retain=True, qos=self._qos
         )
+
+    async def _clear_legacy_topics(self, client: aiomqtt.Client, data: dict) -> None:
+        """Drop retained state left at the pre-encoding MQTT identifier."""
+        legacy = f"{data['instance_tag']}_{data['attribute']}_{data['index']}"
+        if legacy == data["identifier"]:
+            return
+        for suffix in ("state", "attributes"):
+            topic = f"{self._base_topic}/{legacy}/{suffix}"
+            _LOGGER.info("Clearing previous topic %s", topic)
+            await client.publish(topic=topic, payload="", retain=True, qos=self._qos)

@@ -23,13 +23,45 @@ class FakeMqtt:
 
     def __init__(self) -> None:
         self.published: list[tuple[str, dict[str, Any], str | None]] = []
+        self.attempts: list[str] = []
         self.fail = False
+        self.fail_identifiers: set[str] = set()
+        self.delay = 0.0
+        self.during_publish: Callable[[str], None] | None = None
+        self._connected = asyncio.Event()
+        self._connected.set()
 
-    async def publish_state(self, name: str, data: dict, serial: str | None) -> None:
+    @property
+    def connected(self) -> bool:
+        return self._connected.is_set()
+
+    @connected.setter
+    def connected(self, value: bool) -> None:
+        if value:
+            self._connected.set()
+        else:
+            self._connected.clear()
+
+    async def wait_connected(self) -> None:
+        await self._connected.wait()
+
+    async def publish_state(self, name: str, data: dict, serial: str | None) -> bool:
+        identifier = data["identifier"]
+        self.attempts.append(identifier)
+        if not self.connected:
+            return False
+        if self.during_publish is not None:
+            self.during_publish(identifier)
+            await asyncio.sleep(0)
+        if self.delay:
+            await asyncio.sleep(self.delay)
         if self.fail:
             msg = "MQTT is down"
             raise RuntimeError(msg)
+        if identifier in self.fail_identifiers:
+            return False
         self.published.append((name, copy.deepcopy(data), serial))
+        return True
 
     def states_for(self, identifier: str) -> list[Any]:
         return [

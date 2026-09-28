@@ -2,7 +2,7 @@
 
 ## Overview
 
-`MqttConnection` (`src/mqtt_connection.py`) owns the connection to the MQTT broker. It keeps the latest entry for every subscribed control so that after a broker outage (for example a blue/green redeploy) it can republish availability, discovery, command subscriptions and state without involving the Tesira.
+`MqttConnection` (`src/mqtt_connection.py`) owns the connection to the MQTT broker. It keeps the last delivered entry for every subscribed control so that after a broker outage (for example a blue/green redeploy) it can republish availability, discovery, command subscriptions and state without involving the Tesira.
 
 ## How it works
 
@@ -11,7 +11,7 @@
 1. publishes `online` to `<base_topic>/availability` (retained; the last will is `offline`),
 2. for every stored entry: subscribes to `<base_topic>/<identifier>/set`, publishes the Home Assistant discovery message, then the state and attributes.
 
-`publish_state()` stores the entry and publishes it if connected. While disconnected it only stores, and never raises, so the Tesira side keeps running through an outage; the latest values are flushed on reconnect.
+`publish_state()` publishes the entry if connected and never raises, so the Tesira side keeps running through an outage. It returns `False` when the state was not delivered, and nothing is stored for replay. The Tesira publisher keeps such values and sends the latest one once the broker is back, or drops it if the Tesira session ends first, so a value from a dead session is never published late.
 
 Incoming messages on `<base_topic>/<identifier>/set` are passed to the command handler given to `run()`. Handler errors are logged, not fatal.
 
@@ -43,13 +43,13 @@ Waits until the broker is connected.
 
 #### publish_state(name, data, serial)
 
-Stores the entry (see the state store in [Tesira Connection](tesira-connection.md)) and, if connected, publishes:
+If connected, publishes the entry (see the state store in [Tesira Connection](tesira-connection.md)) and keeps it for replay once its state is delivered:
 
-- `<base_topic>/<identifier>/state` – JSON value, retained, QoS 2
-- `<base_topic>/<identifier>/attributes` – the entry, retained, QoS 2
-- `homeassistant/<switch|number>/<unique_id>/config` – on the first publish of an identifier per connection
+- `<base_topic>/<identifier>/state` – JSON value, retained, QoS 1
+- `<base_topic>/<identifier>/attributes` – the entry, retained, QoS 1
+- `homeassistant/<switch|number>/<serial>_<identifier>/config` – on the first publish of an identifier per connection. The payload's `unique_id` stays `<serial>_<instance_tag>_<attribute>_<index>`, so Home Assistant keeps the same entity. For a tag whose identifier is encoded, the retained config, state and attributes left at its earlier raw-tag identifier are cleared first; that identifier can never belong to another subscription.
 
-Never raises.
+Never raises. Returns `False` when disconnected or when the broker rejects the publish, so the caller can retry.
 
 #### publish_status(status="online")
 

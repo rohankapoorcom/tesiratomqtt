@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from collections.abc import AsyncIterator, Callable
 
@@ -64,11 +65,41 @@ async def test_mqtt_outage_does_not_touch_the_tesira(
     assert bridge.connected
 
     await wait_until(lambda: broker.connects == 2)
-    await wait_until(lambda: broker.on(STATE) == [True])
+    # The replay repeats the delivered value, then the update follows.
+    await wait_until(lambda: broker.on(STATE) == [False, True])
     assert broker.on("t2m/availability") == [{"state": "online"}]
     assert len(broker.on(CONFIG)) == 1
     assert server.open_sessions == sessions
     assert len(server.subscribe_commands()) == subscribe_count
+
+
+async def test_state_held_during_mqtt_outage_is_dropped_if_tesira_drops(
+    bridge: BiampTesiraConnection,
+    server: FakeTesiraServer,
+    broker: FakeBroker,
+    mqtt_conn: MqttConnection,
+) -> None:
+    await wait_until(lambda: broker.on(STATE) == [False])
+    broker.refuse = True
+    broker.drop()
+    await wait_until(lambda: not mqtt_conn.connected)
+    await server.push_update("Mic1", "mute", "true")
+    await wait_until(lambda: "Mic1_mute_1" in bridge._dirty)
+
+    # The device changes back while the Tesira session is down.
+    server.blocks["Mic1"].mute = False
+    subscribe_count = len(server.subscribe_commands())
+    server.drop_all_sessions()
+    await wait_until(
+        lambda: bridge.connected and len(server.subscribe_commands()) > subscribe_count
+    )
+
+    broker.refuse = False
+    # Reconnect backoff has grown while the broker refused connections.
+    await wait_until(lambda: broker.connects == 2, deadline_seconds=10)
+    await wait_until(lambda: broker.on(STATE) == [False, False, False])
+    await asyncio.sleep(0.2)
+    assert True not in broker.on(STATE)
 
 
 async def test_command_from_mqtt_reaches_the_tesira(

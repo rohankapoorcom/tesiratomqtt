@@ -128,6 +128,7 @@ subscription = Subscription(
 - `attribute`: Must be either "mute" or "level"
 - `index`: Must be a positive integer
 - `instance_tag`, `name`, `device_name`: Must be non-empty strings
+- `instance_tag`: Must not contain `"`, `/`, `&`, `+`, `#`, control characters, Unicode line breaks or unpaired surrogates
 
 #### Special Methods
 

@@ -21,11 +21,14 @@ Each session has a reader task that classifies every line:
 
 | Line | Handling |
 |------|----------|
-| `! "publishToken":"<label>" "value":<value>` | Store and publish the value. A trailing ` +OK` also resolves the pending command. |
-| `+OK` / `+OK "value":<value>` / `-ERR ...` | Response to the command in flight on that session. |
-| anything else | Ignored (command echo, blank lines, terminal preamble). |
+| `! "publishToken":"<label>" "value":<value>` | Store the value and mark it for the publisher task. A trailing ` +OK` also resolves the pending command. |
+| exact echo of the command in flight | Ignored, even when the tag starts with `-`. |
+| `+OK` / `+OK "value":<value>` / any line starting with `-` (`-ERR`, `-CANNOT_DELIVER`, `-GENERAL_FAILURE`, ...) | Response to the command in flight on that session. |
+| anything else | Ignored (blank lines, terminal preamble). |
 
-Commands are serialised per session with a lock and each awaits its own `+OK`/`-ERR`. A command that gets no response within `command_timeout` marks the connection lost, since a late reply would otherwise be matched to the next command.
+A separate publisher task sends the latest value of each changed control to MQTT, so a slow or disconnected broker never blocks either reader.
+
+Commands are serialised per session with a lock and each awaits its own `+OK` or error reply. A command that gets no response within `command_timeout` marks the connection lost, since a late reply would otherwise be matched to the next command.
 
 Both `CR LF` and `CR NUL` line endings are handled by `src/telnet.py`.
 
@@ -66,7 +69,7 @@ Supervises the connection until cancelled: opens and subscribes (with exponentia
 
 #### subscribe(subscription)
 
-Sends `<instance_tag> subscribe <attribute> <index> <label>` with label `<instance_tag>_<attribute>_<index>` (also the MQTT identifier). For `level`, `minLevel`/`maxLevel` are fetched first. The initial `publishToken` reply is stored and published; `-ERR ALREADY_SUBSCRIBED` is treated as success and the value is fetched with `get` instead.
+Sends `<instance_tag> subscribe <attribute> <index> <label>` where the label is the MQTT identifier: `<instance_tag>_<attribute>_<index>` when the tag only contains `A-Z`, `a-z`, `0-9`, `_` and `-`, otherwise `<attribute>_<index>__<hex of the UTF-8 tag>`. Distinct tags never share an identifier, and an encoded identifier never equals another tag's identifier from an earlier release (see [Identifiers](../architecture/system-overview.md#identifiers)). Tags containing whitespace are sent in double quotes. For `level`, `minLevel`/`maxLevel` are fetched first. The initial `publishToken` reply is stored and published; `-ERR ALREADY_SUBSCRIBED` is treated as success and the value is fetched with `get` instead.
 
 Raises `ClientResponseError` if the device rejects the subscription, or a connection error.
 
@@ -86,11 +89,11 @@ await tesira_conn.command("OfficeSpeakersPCLevel get level 1")     # '-4.000000'
 await tesira_conn.command("OfficeSpeakersPCLevel set mute 1 true") # None
 ```
 
-Raises `ClientResponseError` on `-ERR` or an unparseable reply, `ClientTimeoutError` on no response, `ClientConnectionError` when not connected.
+Raises `ClientResponseError` on any reply starting with `-` or an unparseable reply, `ClientTimeoutError` on no response, `ClientConnectionError` when not connected.
 
 #### update_state_and_command(key, value)
 
-Sends `<instance_tag> set <attribute> <index> <value>` for the subscription identified by `key`. State is updated by the resulting `publishToken`, so it always reflects what the device did. Raises `ClientError` for an unknown key.
+Sends `<instance_tag> set <attribute> <index> <value>` for the subscription identified by `key`. Mute accepts only `true`/`false` (any case, sent lowercase). Level is parsed as a number, clamped to `min_level`/`max_level` and sent without exponent notation. Any other payload raises `ClientResponseError` and nothing is sent. State is updated by the resulting `publishToken`, so it always reflects what the device did. Raises `ClientError` for an unknown key.
 
 #### get_min_max_levels(subscription) -> dict[str, float]
 
@@ -124,9 +127,9 @@ Each subscription entry, as passed to `MqttConnection.publish_state()`:
 | `ClientError` | Base class; also unknown MQTT identifier. |
 | `ClientConnectionError` | Not connected, refused, or closed by the device. |
 | `ClientTimeoutError` | Connection, banner or command timed out. |
-| `ClientResponseError` | `-ERR`, or a reply that could not be parsed. |
+| `ClientResponseError` | A reply starting with `-` (`-ERR`, `-CANNOT_DELIVER`, ...), an invalid `set` payload, or a reply that could not be parsed. |
 
-MQTT publish failures inside the reader loop are logged and do not affect the connection.
+MQTT publish failures are handled by the publisher task: they are logged, retried after a short delay, and never affect the Tesira connection.
 
 ## Example
 

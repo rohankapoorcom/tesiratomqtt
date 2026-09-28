@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
 import re
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from pydantic import TypeAdapter, ValidationError
@@ -17,6 +19,7 @@ from errors import (
     ClientResponseError,
     ClientTimeoutError,
 )
+from models import subscription_identifier
 from telnet import BiampTesiraTelnetConnection
 
 if TYPE_CHECKING:
@@ -30,7 +33,8 @@ _PUBLISH_TOKEN_RE = re.compile(
     r'^! "publishToken":"(?P<token>[^"]*)" "value":(?P<value>.*?)(?P<ok> \+OK)?$'
 )
 _OK_RE = re.compile(r'^\+OK(?: "value":(?P<value>.*))?$')
-_ERR_PREFIX = "-ERR"
+# Any "-..." line is a failure (-ERR, -CANNOT_DELIVER, -GENERAL_FAILURE, ...).
+_ERR_PREFIX = "-"
 _ALREADY_SUBSCRIBED = "ALREADY_SUBSCRIBED"
 
 # Used in MQTT topics and Home Assistant object ids, which only allow these.
@@ -44,6 +48,7 @@ _TYPE_ADAPTERS: dict[str, TypeAdapter] = {
 
 _RECONNECT_BACKOFF_INITIAL = 1.0
 _RECONNECT_BACKOFF_MAX = 60.0
+_PUBLISH_RETRY = 0.5
 
 
 @dataclass
@@ -55,6 +60,7 @@ class _Channel:
     reader_task: asyncio.Task | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     pending: asyncio.Future[str] | None = None
+    pending_command: str | None = None
 
     @property
     def connected(self) -> bool:
@@ -74,6 +80,56 @@ class _Channel:
         return False
 
 
+def _quote_tag(tag: str) -> str:
+    """Quote an instance tag when it contains whitespace."""
+    if any(char.isspace() for char in tag):
+        return f'"{tag}"'
+    return tag
+
+
+def _subscription_identifier(subscription: Subscription) -> str:
+    """MQTT and publishToken id for a subscription."""
+    return subscription_identifier(
+        subscription.instance_tag, subscription.attribute, subscription.index
+    )
+
+
+def _format_level(number: float, minimum: float, maximum: float) -> str:
+    """Format a clamped level without rounding it back outside the bounds."""
+    text = f"{number:.2f}"
+    if minimum <= float(text) <= maximum:
+        return text
+    # repr() is the shortest string that parses back to exactly ``number``;
+    # Decimal writes it without an exponent.
+    return format(Decimal(repr(number)), "f")
+
+
+def _command_value(entry: dict[str, Any], value: str) -> str:
+    """Normalize an MQTT payload into a single TTP set argument."""
+    kind = entry["variable_type"]
+    if kind == "bool":
+        normalized = value.strip().lower()
+        if normalized not in {"true", "false"}:
+            msg = f"Invalid mute value: {value!r}"
+            raise ClientResponseError(msg)
+        return normalized
+    if kind == "float":
+        try:
+            number = float(value)
+        except ValueError as err:
+            msg = f"Invalid level value: {value!r}"
+            raise ClientResponseError(msg) from err
+        if not math.isfinite(number):
+            msg = f"Invalid level value: {value!r}"
+            raise ClientResponseError(msg)
+        minimum = float(entry["min_level"])
+        maximum = float(entry["max_level"])
+        number = min(max(number, minimum), maximum)
+        return _format_level(number, minimum, maximum)
+    msg = f"Unsupported value for {entry['attribute']}: {value!r}"
+    raise ClientResponseError(msg)
+
+
 def _unquote(value: str) -> str:
     """Strip surrounding double quotes."""
     if len(value) >= 2 and value[0] == value[-1] == '"':  # noqa: PLR2004
@@ -87,8 +143,8 @@ class BiampTesiraConnection:
 
     One session carries subscriptions (and their ``publishToken`` updates), the
     other carries commands. A reader task per session routes updates to the state
-    store, ``+OK``/``-ERR`` lines to the pending command, and ignores the rest
-    (the Tesira echoes every command back).
+    store, ``+OK`` and any line starting with ``-`` to the pending command, and
+    ignores the rest (the Tesira echoes every command back).
     """
 
     def __init__(self, tesira: TesiraConfig, mqtt: MqttConnection) -> None:
@@ -101,6 +157,9 @@ class BiampTesiraConnection:
         self._subscriptions: dict[str, dict[str, Any]] = {}
         self._connection_lost = asyncio.Event()
         self._heartbeat_task: asyncio.Task | None = None
+        self._publisher_task: asyncio.Task | None = None
+        self._dirty: set[str] = set()
+        self._publish_event = asyncio.Event()
         self._closing = False
 
     @property
@@ -165,6 +224,9 @@ class BiampTesiraConnection:
             )
             raise ClientResponseError(msg)
         self._serial_number = serial_number
+        self._publisher_task = asyncio.create_task(
+            self._publisher_loop(), name="tesira-publisher"
+        )
 
         if self._tesira.heartbeat_interval > 0:
             self._heartbeat_task = asyncio.create_task(
@@ -192,9 +254,10 @@ class BiampTesiraConnection:
         # Set first so the cancelled readers do not log a "lost" connection.
         self._connection_lost.set()
 
-        if self._heartbeat_task is not None:
-            task, self._heartbeat_task = self._heartbeat_task, None
-            if task is not asyncio.current_task():
+        for attr in ("_heartbeat_task", "_publisher_task"):
+            task: asyncio.Task | None = getattr(self, attr)
+            setattr(self, attr, None)
+            if task is not None and task is not asyncio.current_task():
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
@@ -210,6 +273,13 @@ class BiampTesiraConnection:
                 _LOGGER.debug("%s - connection closed", channel.name)
                 channel.telnet = None
             channel.fail_pending(ClientConnectionError("Client not connected."))
+
+        # The device may have changed while the session was down, so values
+        # from it that were never published are dropped rather than sent late.
+        # Resubscribing fetches and publishes the current ones.
+        self._dirty.clear()
+        for entry in self._subscriptions.values():
+            entry["state"] = None
 
     def _on_connection_lost(self, channel: _Channel, reason: str) -> None:
         """Mark the connection lost and fail in-flight commands."""
@@ -289,12 +359,62 @@ class BiampTesiraConnection:
                 channel.resolve_pending("+OK")
             return
 
+        # The device echoes the command. A tag such as "-Mic" would otherwise
+        # look like -CANNOT_DELIVER / -ERR.
+        if line == channel.pending_command:
+            _LOGGER.debug("%s - Ignoring echo: %s", channel.name, line)
+            return
+
         if line.startswith(_ERR_PREFIX) or _OK_RE.match(line) is not None:
             if not channel.resolve_pending(line):
                 _LOGGER.debug("%s - Unsolicited response: %s", channel.name, line)
             return
 
         _LOGGER.debug("%s - Ignoring echo: %s", channel.name, line)
+
+    async def _publisher_loop(self) -> None:
+        """Publish the newest value of each dirty identifier."""
+        retry_after: dict[str, float] = {}
+        while True:
+            if self._dirty and not self._mqtt.connected:
+                await self._mqtt.wait_connected()
+            loop = asyncio.get_running_loop()
+            now = loop.time()
+            ready = [item for item in self._dirty if retry_after.get(item, 0) <= now]
+            if not ready:
+                if not self._dirty:
+                    await self._publish_event.wait()
+                else:
+                    delay = min(retry_after[item] for item in self._dirty) - now
+                    if delay > 0:
+                        with contextlib.suppress(TimeoutError):
+                            await asyncio.wait_for(self._publish_event.wait(), delay)
+                self._publish_event.clear()
+                continue
+
+            self._publish_event.clear()
+            for identifier in ready:
+                if self._connection_lost.is_set():
+                    # Teardown drops what is left; resubscribing refreshes it.
+                    return
+                self._dirty.discard(identifier)
+                entry = self._subscriptions.get(identifier)
+                serial = self._serial_number
+                if entry is None or entry.get("state") is None or serial is None:
+                    retry_after.pop(identifier, None)
+                    continue
+                try:
+                    published = await self._mqtt.publish_state(
+                        entry["name"], {**entry}, serial
+                    )
+                except Exception:
+                    _LOGGER.exception("Failed to publish state for %s", identifier)
+                    published = False
+                if not published:
+                    retry_after[identifier] = loop.time() + _PUBLISH_RETRY
+                    self._dirty.add(identifier)
+                else:
+                    retry_after.pop(identifier, None)
 
     async def _heartbeat_loop(self) -> None:
         """Detect a silently dead session."""
@@ -309,7 +429,7 @@ class BiampTesiraConnection:
                 return
 
     async def _request(self, channel: _Channel, command: str) -> str:
-        """Send a command and return its ``+OK``/``-ERR`` line."""
+        """Send a command and return its ``+OK`` or ``-...`` error line."""
         async with channel.lock:
             telnet = channel.telnet
             if telnet is None or telnet.closed or self._connection_lost.is_set():
@@ -318,6 +438,7 @@ class BiampTesiraConnection:
 
             future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
             channel.pending = future
+            channel.pending_command = command
             try:
                 _LOGGER.debug("%s - Sending %s", channel.name, command)
                 await telnet.write(command)
@@ -329,6 +450,7 @@ class BiampTesiraConnection:
                 raise ClientTimeoutError(msg) from err
             finally:
                 channel.pending = None
+                channel.pending_command = None
 
     @staticmethod
     def _parse_response(response: str) -> str | None:
@@ -354,17 +476,18 @@ class BiampTesiraConnection:
             msg = f"Key: {key} does not match any subscriptions"
             raise ClientError(msg)
 
+        normalized = _command_value(entry, value)
+        tag = _quote_tag(entry["instance_tag"])
         await self.command(
-            f"{entry['instance_tag']} set {entry['attribute']} {entry['index']} {value}"
+            f"{tag} set {entry['attribute']} {entry['index']} {normalized}"
         )
 
     async def get_min_max_levels(self, subscription: Subscription) -> dict[str, float]:
         """Get the min and max levels of a level control block."""
         levels: dict[str, float] = {}
         for key, attribute in (("min_level", "minLevel"), ("max_level", "maxLevel")):
-            raw = await self.command(
-                f"{subscription.instance_tag} get {attribute} {subscription.index}"
-            )
+            tag = _quote_tag(subscription.instance_tag)
+            raw = await self.command(f"{tag} get {attribute} {subscription.index}")
             try:
                 levels[key] = _TYPE_ADAPTERS["float"].validate_python(raw)
             except ValidationError as err:
@@ -395,17 +518,16 @@ class BiampTesiraConnection:
             raise ClientConnectionError(msg)
 
         _LOGGER.debug("Creating subscription for %s", subscription)
-        identifier = (
-            f"{subscription.instance_tag}_{subscription.attribute}_{subscription.index}"
-        )
+        identifier = _subscription_identifier(subscription)
         is_new = identifier not in self._subscriptions
         if is_new:
             self._subscriptions[identifier] = await self._build_entry(
                 subscription, identifier
             )
 
+        tag = _quote_tag(subscription.instance_tag)
         command = (
-            f"{subscription.instance_tag} subscribe {subscription.attribute} "
+            f"{tag} subscribe {subscription.attribute} "
             f"{subscription.index} {identifier}"
         )
         try:
@@ -425,8 +547,7 @@ class BiampTesiraConnection:
         if self._subscriptions[identifier]["state"] is None:
             # No initial publishToken (already subscribed): fetch the value.
             value = await self.command(
-                f"{subscription.instance_tag} get {subscription.attribute} "
-                f"{subscription.index}"
+                f"{tag} get {subscription.attribute} {subscription.index}"
             )
             await self._apply_state(identifier, value or "")
 
@@ -451,7 +572,10 @@ class BiampTesiraConnection:
             "state": None,
             "variable_type": variable_type,
             "device_id": f"{self._serial_number}_{subscription.instance_tag}",
-            "unique_id": f"{self._serial_number}_{identifier}",
+            "unique_id": (
+                f"{self._serial_number}_{subscription.instance_tag}_"
+                f"{subscription.attribute}_{subscription.index}"
+            ),
             "name": subscription.name,
             "device_name": subscription.device_name,
             "identifier": identifier,
@@ -459,7 +583,7 @@ class BiampTesiraConnection:
         }
 
     async def _apply_state(self, identifier: str, raw_value: str) -> None:
-        """Store a new value and publish it."""
+        """Store a new value and mark it for the publisher task."""
         entry = self._subscriptions.get(identifier)
         if entry is None:
             _LOGGER.warning("Received update for unknown subscription %s", identifier)
@@ -473,7 +597,5 @@ class BiampTesiraConnection:
             _LOGGER.warning("Ignoring invalid value %r for %s", raw_value, identifier)
             return
 
-        try:
-            await self._mqtt.publish_state(entry["name"], entry, self._serial_number)
-        except Exception:
-            _LOGGER.exception("Failed to publish state for %s", identifier)
+        self._dirty.add(identifier)
+        self._publish_event.set()

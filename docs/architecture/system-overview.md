@@ -43,14 +43,15 @@ Neither Tesira nor MQTT failure affects the other; an unexpected exception resta
 
 - Holds the `aiomqtt` client open and reconnects with exponential backoff on loss.
 - Keeps the latest entry per identifier. On every (re)connect it publishes `online`, subscribes to each `set` topic and republishes discovery, state and attributes for every entry, so a fresh broker (blue/green deploy) is fully repopulated.
-- `publish_state()` publishes `<base_topic>/<identifier>/state` and `/attributes` (retained, QoS 2) plus the discovery message on first sight; while disconnected it only stores the entry and never raises.
+- `publish_state()` publishes `<base_topic>/<identifier>/state` and `/attributes` (retained, QoS 1) plus the discovery message on first sight. It never raises and returns `False` when disconnected or when the broker rejects a publish; only delivered entries are kept for replay.
 
 See [MQTT Connection API](../api/mqtt-connection.md).
 
 ### `src/tesira.py` – BiampTesiraConnection
 
 - Opens a **subscription** session and a **command** session concurrently and validates the device serial number.
-- One **reader loop** per session classifies each line as a `publishToken` update (to the state store and MQTT), a `+OK`/`-ERR` response (to the command in flight) or echo/noise (ignored).
+- One **reader loop** per session classifies each line as a `publishToken` update (to the state store), a `+OK` or error response (any line starting with `-`, such as `-ERR` or `-CANNOT_DELIVER`, goes to the command in flight) or echo/noise (ignored).
+- A separate **publisher task** sends the latest value of each changed control to MQTT, so a slow broker never stalls the reader. A failed publish is retried after a short delay, and while MQTT is disconnected the task waits for it. It starts once the serial number is read. When a session ends, values it never published are dropped, since the device may have changed meanwhile; resubscribing publishes the current ones.
 - Commands are serialised per session with a lock; no fixed delays.
 - **Supervisor** (`run()`): reconnects with exponential backoff and resubscribes on loss; refreshes subscriptions every `resubscription_time` seconds. Loss is detected via EOF, command timeout or heartbeat failure.
 
@@ -77,7 +78,7 @@ Load config ─► connect MQTT
   └─► open() : both sessions concurrently ─► banner ─► reader loops ─► DEVICE get serialNumber
   └─► subscribe_all() : per subscription (level: get minLevel/maxLevel) ─► subscribe
         └─► Tesira replies with current value ─► state store ─► MQTT state + discovery
-  └─► MQTT: connect ─► publish "online" ─► republish stored entries
+  └─► MQTT: connect ─► publish "online" ─► republish delivered entries
 ```
 
 The Tesira sets sessions up one at a time at ~3 s each, so startup is dominated by ~6 s of session setup; subscriptions take milliseconds.
@@ -86,7 +87,7 @@ The Tesira sets sessions up one at a time at ~3 s each, so startup is dominated 
 
 ```
 ! "publishToken":"<identifier>" "value":<v>   (subscription session)
-  └─► coerce value ─► state store ─► publish_state()
+  └─► coerce value ─► state store ─► publisher task ─► publish_state()
         ├─► <base_topic>/<identifier>/state       (retained)
         ├─► <base_topic>/<identifier>/attributes  (retained)
         └─► homeassistant/.../config              (first time only)
@@ -104,7 +105,7 @@ Tesira then sends a publishToken update, which follows the path above.
 
 ```
 EOF / command timeout / heartbeat failure
-  └─► in-flight commands fail ─► run() tears down both sessions
+  └─► in-flight commands fail ─► run() tears down both sessions, dropping unpublished values
         └─► open() + subscribe_all(), backoff 1 s → 60 s while unreachable
 ```
 
@@ -113,8 +114,9 @@ EOF / command timeout / heartbeat failure
 ```
 broker drops (last will publishes "offline")
   └─► MqttConnection.run() reconnects, backoff 1 s → 60 s
-        └─► publish "online" ─► resubscribe set topics ─► republish discovery + latest state
-Tesira sessions and subscriptions are untouched; updates during the outage are kept in the store.
+        └─► publish "online" ─► resubscribe set topics ─► republish discovery + last delivered state
+        └─► publisher task sends the latest value of controls that changed during the outage
+Tesira sessions and subscriptions are untouched.
 ```
 
 ## MQTT Topic Layout
@@ -122,14 +124,14 @@ Tesira sessions and subscriptions are untouched; updates during the outage are k
 ```
 <base_topic>/
 ├── availability                         {"state": "online"|"offline"}   (retained, last will)
-└── <identifier>/                        <instance_tag>_<attribute>_<index>
+└── <identifier>/                        see Identifiers below
     ├── state                            JSON value, retained
     ├── attributes                       state-store entry, retained
     └── set                              command topic
 
 homeassistant/
-├── switch/<unique_id>/config            mute
-└── number/<unique_id>/config            level (min/max/step in dB)
+├── switch/<serial>_<identifier>/config  mute
+└── number/<serial>_<identifier>/config  level (min/max/step in dB)
 ```
 
 Example for `OfficeSpeakersPCLevel` on serial `03787145`:
@@ -141,6 +143,12 @@ tesira2mqtt/OfficeSpeakersPCLevel_level_1/set
 homeassistant/number/03787145_OfficeSpeakersPCLevel_level_1/config
 ```
 
+### Identifiers
+
+An instance tag made only of `A-Z`, `a-z`, `0-9`, `_` and `-` gives `<instance_tag>_<attribute>_<index>`, the same as earlier releases. Any other tag gives `<attribute>_<index>__<hex of the UTF-8 tag>`, for example `Room A` mute 1 becomes `mute_1__526f6f6d2041`. Encoded identifiers never end in `mute_<index>` or `level_<index>`, so they cannot equal the identifier of any other tag, now or from an earlier release.
+
+The Home Assistant `unique_id` is always `<serial>_<instance_tag>_<attribute>_<index>` with the raw tag, so entities keep their identity. For an encoded tag, the retained state, attributes and discovery topics left at its earlier raw-tag identifier are cleared when it is first announced.
+
 ## Error Handling
 
 | Situation | Behaviour |
@@ -149,7 +157,7 @@ homeassistant/number/03787145_OfficeSpeakersPCLevel_level_1/config
 | Command times out | Connection rebuilt (a late reply would be matched to the next command). |
 | Subscription rejected | Logged and skipped. |
 | MQTT command rejected | Logged. |
-| MQTT publish fails in reader loop | Logged. |
+| MQTT publish fails | Logged; the publisher task retries the latest value after a short delay. |
 | MQTT broker connection lost | `MqttConnection.run()` reconnects and republishes everything; Tesira untouched. |
 | Invalid configuration | Exit at startup. |
 
