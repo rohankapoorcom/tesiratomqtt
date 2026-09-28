@@ -17,6 +17,17 @@ PREAMBLE = (
 )
 
 
+def _tokenize(line: str) -> list[str]:
+    """Split a TTP command, keeping a quoted instance tag as one token."""
+    if line.startswith('"'):
+        end = line.find('"', 1)
+        if end != -1:
+            tag = line[1:end]
+            rest = line[end + 1 :].strip()
+            return [tag, *rest.split()] if rest else [tag]
+    return line.split(" ")
+
+
 def _format_value(value: Any) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
@@ -171,8 +182,13 @@ class Session:
             await asyncio.sleep(server.response_delay)
         if server.silent:
             return
+        if server.forced_reply is not None:
+            reply = server.forced_reply
+            server.forced_reply = None
+            await self.send_line(reply)
+            return
 
-        parts = line.split(" ")
+        parts = _tokenize(line)
         if line == "DEVICE get serialNumber":
             if server.serial_error:
                 await self.send_line("-ERR ATTRIBUTE_NOT_FOUND")
@@ -242,6 +258,7 @@ class FakeTesiraServer:
         self.silent = False
         self.response_delay = 0.0
         self.interleave_before_ok: tuple[str, Any] | None = None
+        self.forced_reply: str | None = None
         self.commands_received: list[str] = []
         self.sessions: list[Session] = []
         self._server: asyncio.AbstractServer | None = None

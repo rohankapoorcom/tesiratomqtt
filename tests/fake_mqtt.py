@@ -18,6 +18,7 @@ class Published:
     topic: str
     payload: Any
     retain: bool
+    qos: int = 0
 
 
 class FakeBroker:
@@ -28,6 +29,12 @@ class FakeBroker:
         self.clients: list[FakeClient] = []
         self.refuse = False
         self.connects = 0
+        # A publish to ``fail_topic`` raises MqttError.
+        self.fail_topic: str | None = None
+        # A publish to ``hold_topic`` sets ``held`` and waits for ``release``.
+        self.hold_topic: str | None = None
+        self.held = asyncio.Event()
+        self.release = asyncio.Event()
 
     def client_factory(self, **kwargs: Any) -> FakeClient:
         """Drop-in replacement for ``aiomqtt.Client``."""
@@ -50,6 +57,18 @@ class FakeBroker:
 
     def on(self, topic: str) -> list[Any]:
         return [p.payload for p in self.published if p.topic == topic]
+
+    def retained(self) -> dict[str, Any]:
+        """Return what the broker still retains; an empty payload deletes."""
+        kept: dict[str, Any] = {}
+        for item in self.published:
+            if not item.retain:
+                continue
+            if item.payload == "":
+                kept.pop(item.topic, None)
+            else:
+                kept[item.topic] = item.payload
+        return kept
 
     def clear(self) -> None:
         self.published.clear()
@@ -94,12 +113,19 @@ class FakeClient:
         topic: str,
         payload: str,
         retain: bool = False,
-        qos: int = 0,  # noqa: ARG002
+        qos: int = 0,
     ) -> None:
         if not self.connected:
             msg = "not connected"
             raise aiomqtt.MqttError(msg)
-        self.broker.published.append(Published(topic, json.loads(payload), retain))
+        if topic == self.broker.fail_topic:
+            msg = f"publish to {topic} rejected"
+            raise aiomqtt.MqttError(msg)
+        if topic == self.broker.hold_topic:
+            self.broker.held.set()
+            await self.broker.release.wait()
+        decoded = json.loads(payload) if payload else ""
+        self.broker.published.append(Published(topic, decoded, retain, qos))
 
     async def subscribe(self, topic: str) -> None:
         if not self.connected:

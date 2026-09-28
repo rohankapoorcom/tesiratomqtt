@@ -221,7 +221,7 @@ subscriptions:
 
 #### Validation Rules
 
-- `instance_tag`: Must be non-empty string, matches Tesira device configuration
+- `instance_tag`: Must be a non-empty string that matches the Tesira device configuration. It must not contain `"`, `/`, `&`, `+`, `#`, control characters (including tab) or line breaks. Spaces and other characters are allowed; tags with whitespace are quoted when sent to the Tesira, and tags outside `A-Z`, `a-z`, `0-9`, `_`, `-` get an encoded MQTT identifier (see [Identifiers](../architecture/system-overview.md#identifiers))
 - `attribute`: Must be exactly `level` or `mute`
 - `index`: Must be positive integer (typically 1)
 - `name`: Must be non-empty string, used for display purposes

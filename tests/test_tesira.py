@@ -3,12 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+import random
+import re
 import time
 from typing import TYPE_CHECKING
 
 import pytest
+from pydantic import ValidationError
 
-from conftest import ALL_SUBS, LEVEL_SUB, MUTE_SUB, FakeMqtt, wait_until
+from conftest import (
+    ALL_SUBS,
+    LEVEL_MUTE_SUB,
+    LEVEL_SUB,
+    MUTE_SUB,
+    FakeMqtt,
+    wait_until,
+)
 from errors import (
     ClientConnectionError,
     ClientError,
@@ -16,8 +26,8 @@ from errors import (
     ClientTimeoutError,
 )
 from fake_tesira import Block, FakeTesiraServer
-from models import Subscription
-from tesira import BiampTesiraConnection
+from models import Subscription, subscription_identifier
+from tesira import _PUBLISH_RETRY, BiampTesiraConnection, _command_value
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -380,6 +390,308 @@ async def test_run_retries_with_backoff_while_tesira_is_down(
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+
+
+@pytest.mark.parametrize(
+    "tag",
+    [
+        'say"hi',
+        "a/b",
+        "a&b",
+        "a+b",
+        "a#b",
+        "line\nbreak",
+        "",
+        "\x00",
+        "\x01",
+        "Mic\t1",
+        "a\u0085b",
+        "a\u2028b",
+        "a\u2029b",
+        "\ud800",
+    ],
+)
+def test_instance_tag_rejects_unsafe_characters(tag: str) -> None:
+    with pytest.raises(ValidationError, match="instance_tag"):
+        Subscription(
+            instance_tag=tag,
+            attribute="mute",
+            index=1,
+            name="Mute",
+            device_name="Mic 1",
+        )
+
+
+async def test_update_rejects_injection_and_normalizes_values(
+    connection: BiampTesiraConnection, server: FakeTesiraServer
+) -> None:
+    await connection.open()
+    await connection.subscribe(MUTE_SUB)
+    await connection.subscribe(LEVEL_SUB)
+
+    await connection.update_state_and_command("Mic1_mute_1", "True")
+    assert "Mic1 set mute 1 true" in server.commands_received
+
+    before = len(server.commands_received)
+    for key, payload in (
+        ("Mic1_mute_1", "true\r\nOther set level 1 12"),
+        ("Mic1_mute_1", "1 2 3"),
+        ("Lvl1_level_1", "1 2 3"),
+        ("Lvl1_level_1", "loud"),
+    ):
+        with pytest.raises(ClientResponseError):
+            await connection.update_state_and_command(key, payload)
+    assert len(server.commands_received) == before
+
+    await connection.update_state_and_command("Lvl1_level_1", "100")
+    await connection.update_state_and_command("Lvl1_level_1", "-1000")
+    assert "Lvl1 set level 1 12.00" in server.commands_received
+    assert "Lvl1 set level 1 -100.00" in server.commands_received
+
+
+async def test_level_formatting_stays_inside_narrow_bounds(
+    connection: BiampTesiraConnection, server: FakeTesiraServer
+) -> None:
+    server.blocks["Lvl1"].min_level = 0.001
+    server.blocks["Lvl1"].max_level = 0.009
+    await connection.open()
+    await connection.subscribe(LEVEL_SUB)
+
+    await connection.update_state_and_command("Lvl1_level_1", "999")
+    await connection.update_state_and_command("Lvl1_level_1", "-999")
+    sent = [
+        float(command.rsplit(" ", 1)[-1])
+        for command in server.commands_received
+        if command.startswith("Lvl1 set level ")
+    ]
+    assert sent
+    assert all(0.001 <= value <= 0.009 for value in sent)
+
+
+@pytest.mark.parametrize(
+    "bound", [1.2345678901234567, 0.00001, -0.00001, 1e-300, 123456789.12345679]
+)
+@pytest.mark.parametrize("payload", ["999", "-999"])
+def test_level_formatting_round_trips_exact_bounds(bound: float, payload: str) -> None:
+    entry = {
+        "variable_type": "float",
+        "attribute": "level",
+        "min_level": bound,
+        "max_level": bound,
+    }
+    text = _command_value(entry, payload)
+    assert float(text) == bound
+    assert "e" not in text.lower()
+
+
+@pytest.mark.parametrize("reply", ["-CANNOT_DELIVER", "-GENERAL_FAILURE"])
+async def test_dash_prefixed_errors_fail_the_command(
+    connection: BiampTesiraConnection, server: FakeTesiraServer, reply: str
+) -> None:
+    await connection.open()
+    server.forced_reply = reply
+    with pytest.raises(ClientResponseError, match=reply):
+        await connection.command("Mic1 get mute 1")
+    assert connection.connected
+
+
+async def test_slow_mqtt_publish_does_not_block_the_reader(
+    connection: BiampTesiraConnection, mqtt: FakeMqtt
+) -> None:
+    mqtt.delay = 3
+    await connection.open()
+    started = time.monotonic()
+    await connection.subscribe(MUTE_SUB)
+    assert await connection.command("DEVICE get serialNumber") == "03787145"
+    assert time.monotonic() - started < 1
+    assert connection.connected
+
+
+def _mute(tag: str) -> Subscription:
+    return Subscription(
+        instance_tag=tag,
+        attribute="mute",
+        index=1,
+        name="Mute",
+        device_name="Room",
+    )
+
+
+async def test_tags_that_slugify_alike_stay_distinct(
+    connection: BiampTesiraConnection, server: FakeTesiraServer, mqtt: FakeMqtt
+) -> None:
+    server.blocks["Room A"] = Block(mute=False)
+    server.blocks["Room-A"] = Block(mute=False)
+    spaced = subscription_identifier("Room A", "mute", 1)
+    hyphen = subscription_identifier("Room-A", "mute", 1)
+    encoded_tag = "mute_1__526f6f6d2041"
+    same_as_encoded = subscription_identifier(encoded_tag, "mute", 1)
+    assert spaced == encoded_tag
+    assert hyphen == "Room-A_mute_1"
+    assert len({spaced, hyphen, same_as_encoded}) == 3
+    server.blocks[encoded_tag] = Block(mute=False)
+
+    await connection.open()
+    await connection.subscribe(_mute("Room A"))
+    await connection.subscribe(_mute("Room-A"))
+    await connection.subscribe(_mute(encoded_tag))
+    await connection.update_state_and_command(spaced, "true")
+
+    assert server.blocks["Room A"].mute is True
+    assert server.blocks["Room-A"].mute is False
+    assert connection._subscriptions[spaced]["instance_tag"] == "Room A"
+    assert connection._subscriptions[hyphen]["instance_tag"] == "Room-A"
+    assert connection._subscriptions[same_as_encoded]["instance_tag"] == encoded_tag
+    assert server.blocks[encoded_tag].mute is False
+    await wait_until(lambda: mqtt.last_state(spaced) is True)
+    await wait_until(lambda: mqtt.last_state(hyphen) is False)
+
+
+def test_identifiers_are_unique_and_never_reuse_an_old_identifier() -> None:
+    rng = random.Random(0)  # noqa: S311
+    alphabet = "ae_-01 Aé"
+    specials = ["__", "_mute_1", "mute_1__", "e_1", "526f6f6d2041", "Room A"]
+    tags = {"Room A", "Room-A", "__526f6f6d2041", "mute_1__526f6f6d2041"}
+    while len(tags) < 5000:
+        parts = [
+            rng.choice(specials) if rng.random() < 0.2 else rng.choice(alphabet)
+            for _ in range(rng.randint(1, 6))
+        ]
+        tags.add("".join(parts))
+    keys = [(t, a, i) for t in tags for a in ("mute", "level") for i in (1, 12, -1)]
+    new = {key: subscription_identifier(*key) for key in keys}
+    old = {f"{t}_{a}_{i}": (t, a, i) for t, a, i in keys}
+
+    assert len(set(new.values())) == len(keys)
+    for key, identifier in new.items():
+        assert re.fullmatch(r"[A-Za-z0-9_-]+", identifier)
+        # Equal to an earlier identifier only when it is the same subscription.
+        assert old.get(identifier, key) == key
+
+
+async def test_dash_prefixed_tag_echo_is_not_an_error(
+    connection: BiampTesiraConnection, server: FakeTesiraServer, mqtt: FakeMqtt
+) -> None:
+    server.blocks["-Mic"] = Block(mute=False)
+    identifier = subscription_identifier("-Mic", "mute", 1)
+    await connection.open()
+    await connection.subscribe(_mute("-Mic"))
+
+    assert connection.connected
+    assert f"-Mic subscribe mute 1 {identifier}" in server.commands_received
+    await connection.update_state_and_command(identifier, "true")
+    assert server.blocks["-Mic"].mute is True
+    await wait_until(lambda: mqtt.last_state(identifier) is True)
+
+
+async def test_tag_with_spaces_is_quoted_and_slugified(
+    connection: BiampTesiraConnection, server: FakeTesiraServer, mqtt: FakeMqtt
+) -> None:
+    server.blocks["my level 2"] = Block(level=-3.0)
+    subscription = Subscription(
+        instance_tag="my level 2",
+        attribute="level",
+        index=1,
+        name="Level",
+        device_name="Room",
+    )
+    identifier = subscription_identifier("my level 2", "level", 1)
+    await connection.open()
+    await connection.subscribe(subscription)
+
+    assert '"my level 2" get minLevel 1' in server.commands_received
+    assert f'"my level 2" subscribe level 1 {identifier}' in server.commands_received
+    entry = connection._subscriptions[identifier]
+    assert entry["device_id"] == "03787145_my level 2"
+    assert entry["unique_id"] == "03787145_my level 2_level_1"
+    await wait_until(lambda: mqtt.last_state(identifier) == -3.0)
+
+    await connection.update_state_and_command(identifier, "-6")
+    assert '"my level 2" set level 1 -6.00' in server.commands_received
+
+
+async def test_failed_publish_is_retried(
+    connection: BiampTesiraConnection, server: FakeTesiraServer, mqtt: FakeMqtt
+) -> None:
+    await connection.open()
+    await connection.subscribe(MUTE_SUB)
+    await wait_until(lambda: mqtt.last_state("Mic1_mute_1") is False)
+
+    mqtt.fail = True
+    await server.push_update("Mic1", "mute", "true")
+    await wait_until(lambda: "Mic1_mute_1" in connection._dirty)
+    assert mqtt.last_state("Mic1_mute_1") is False
+
+    mqtt.fail = False
+    await wait_until(lambda: mqtt.last_state("Mic1_mute_1") is True)
+
+
+async def test_failed_publish_is_retried_while_another_control_updates(
+    connection: BiampTesiraConnection, mqtt: FakeMqtt
+) -> None:
+    await connection.open()
+    await connection.subscribe(MUTE_SUB)
+    await connection.subscribe(LEVEL_MUTE_SUB)
+    await wait_until(lambda: mqtt.last_state("Lvl1_mute_1") is True)
+
+    def keep_level_dirty(identifier: str) -> None:
+        if identifier == "Lvl1_mute_1":
+            connection._dirty.add("Lvl1_mute_1")
+            connection._publish_event.set()
+
+    mqtt.during_publish = keep_level_dirty
+    mqtt.attempts.clear()
+    mqtt.fail_identifiers.add("Mic1_mute_1")
+    connection._dirty.update({"Mic1_mute_1", "Lvl1_mute_1"})
+    connection._publish_event.set()
+
+    await wait_until(lambda: mqtt.attempts.count("Mic1_mute_1") >= 2)
+    assert mqtt.attempts.count("Lvl1_mute_1") > 1
+
+
+async def test_unpublished_state_is_dropped_when_the_session_ends(
+    connection: BiampTesiraConnection, server: FakeTesiraServer, mqtt: FakeMqtt
+) -> None:
+    await connection.open()
+    await connection.subscribe_all({MUTE_SUB})
+    await wait_until(lambda: mqtt.last_state("Mic1_mute_1") is False)
+
+    mqtt.fail_identifiers.add("Mic1_mute_1")
+    await server.push_update("Mic1", "mute", "true")
+    await wait_until(lambda: mqtt.attempts.count("Mic1_mute_1") >= 2)
+
+    task = asyncio.create_task(connection.run({MUTE_SUB}))
+    try:
+        # The device changes back while the session is down.
+        server.blocks["Mic1"].mute = False
+        server.drop_all_sessions()
+        await wait_until(lambda: not connection.connected)
+        mqtt.fail_identifiers.clear()
+
+        await wait_until(lambda: mqtt.states_for("Mic1_mute_1") == [False, False])
+        await asyncio.sleep(_PUBLISH_RETRY * 2)
+        assert mqtt.states_for("Mic1_mute_1") == [False, False]
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+async def test_publisher_waits_for_mqtt_instead_of_polling(
+    connection: BiampTesiraConnection, server: FakeTesiraServer, mqtt: FakeMqtt
+) -> None:
+    await connection.open()
+    await connection.subscribe(MUTE_SUB)
+    await wait_until(lambda: mqtt.last_state("Mic1_mute_1") is False)
+
+    mqtt.connected = False
+    started = len(mqtt.attempts)
+    await server.push_update("Mic1", "mute", "true")
+    await asyncio.sleep(_PUBLISH_RETRY * 3)
+    assert len(mqtt.attempts) - started <= 1
+
+    mqtt.connected = True
+    await wait_until(lambda: mqtt.last_state("Mic1_mute_1") is True)
 
 
 async def test_run_resubscribes_on_schedule(

@@ -1,8 +1,36 @@
 """Datamodels used by Tesira2MQTT."""
 
+import re
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+# Characters that break TTP quoting, MQTT topics, or broker handling.
+# Includes ASCII controls and Unicode line breaks (NEL, LS, PS).
+_UNSAFE_TAG_RE = re.compile('["/&+#\x00-\x1f\x7f\u0085\u2028\u2029]')
+# Topic-safe tags are used unchanged so existing identifiers and topics stay put.
+_SAFE_TAG_RE = re.compile(r"^[A-Za-z0-9_-]+\Z")
+
+
+def subscription_identifier(instance_tag: str, attribute: str, index: int) -> str:
+    """
+    Return the MQTT and publishToken id, unique for every subscription.
+
+    A ``[A-Za-z0-9_-]+`` tag gives ``<tag>_<attribute>_<index>``, as in earlier
+    releases. Any other tag gives ``<attribute>_<index>__<hex of the tag>``.
+    Tag-first ids always end in ``e_<index>`` (``mute`` and ``level`` end in
+    ``e``), while in an encoded id the last ``_`` follows another ``_``. So an
+    encoded id never equals a current or earlier tag-first id, and cleaning up
+    an earlier id can never touch a live one.
+    """
+    if _SAFE_TAG_RE.fullmatch(instance_tag):
+        return f"{instance_tag}_{attribute}_{index}"
+    try:
+        encoded = instance_tag.encode()
+    except UnicodeEncodeError as err:
+        msg = f"instance tag {instance_tag!r} is not valid Unicode"
+        raise ValueError(msg) from err
+    return f"{attribute}_{index}__{encoded.hex()}"
 
 
 class MqttConfig(BaseModel):
@@ -35,6 +63,23 @@ class Subscription(BaseModel):
     index: int
     name: str
     device_name: str
+
+    @field_validator("instance_tag")
+    @classmethod
+    def _reject_unsafe_instance_tag(cls, value: str) -> str:
+        """Reject tags that break TTP commands or MQTT topics."""
+        if not value or _UNSAFE_TAG_RE.search(value):
+            msg = (
+                'instance_tag must be non-empty and must not contain ", /, &, +, #, '
+                "control characters, or line breaks"
+            )
+            raise ValueError(msg)
+        try:
+            value.encode()
+        except UnicodeEncodeError as err:
+            msg = "instance_tag must be valid Unicode"
+            raise ValueError(msg) from err
+        return value
 
     def __key(self) -> tuple:
         return (
