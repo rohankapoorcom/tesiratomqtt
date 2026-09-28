@@ -1,41 +1,45 @@
-FROM python:3.13-alpine
+# syntax=docker/dockerfile:1
+
+# Docker Hardened Images require `docker login dhi.io` (Docker Hub credentials).
+# The build and runtime stages must use the same Python version so the venv's
+# interpreter symlinks resolve in the runtime image.
+ARG PYTHON_TAG=3.13-alpine
+
+## -----------------------------------------------------
+## Build stage: the -dev variant has a shell and pip and runs as root.
+FROM dhi.io/python:${PYTHON_TAG}-dev AS build
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-WORKDIR /app
+RUN python -m venv /app/venv
 
-# Create a non-privileged user that the app will run under.
-# See https://docs.docker.com/go/dockerfile-user-best-practices/
-ARG UID=10001
-RUN adduser \
-    --disabled-password \
-    --gecos "" \
-    --home "/nonexistent" \
-    --shell "/sbin/nologin" \
-    --no-create-home \
-    --uid "${UID}" \
-    appuser
-
-# Download dependencies as a separate step to take advantage of Docker's caching.
 # Leverage a cache mount to /root/.cache/pip to speed up subsequent builds.
-# Leverage a bind mount to requirements.txt to avoid having to copy them into
-# into this layer.
+# Leverage a bind mount to requirements.txt to avoid copying it into this layer.
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=bind,source=requirements.txt,target=requirements.txt \
-    python -m pip install -r requirements.txt
+    /app/venv/bin/pip install -r requirements.txt
 
-# Switch to the non-privileged user to run the application.
-USER appuser
+## -----------------------------------------------------
+## Runtime stage: no shell or package manager, runs as nonroot (UID 65532).
+FROM dhi.io/python:${PYTHON_TAG}
 
-# Copy the source code into the container.
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PATH="/app/venv/bin:$PATH"
+
+WORKDIR /app
+
+COPY --from=build /app/venv /app/venv
 COPY src .
+
+USER 65532
 
 ENV HEALTHCHECK_URL=http://127.0.0.1:8080/health
 EXPOSE 8080
+# Exec form is required: the runtime image has no /bin/sh.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \
-    CMD python -c "import os,urllib.request; urllib.request.urlopen(os.environ['HEALTHCHECK_URL'])"
+    CMD ["python", "-c", "import os,urllib.request; urllib.request.urlopen(os.environ['HEALTHCHECK_URL'])"]
 
-# Run the application.
 ENTRYPOINT ["python", "__init__.py"]
 CMD ["--config", "/config/config.yaml"]
