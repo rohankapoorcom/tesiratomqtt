@@ -289,6 +289,26 @@ async def test_reconnect_republishes_availability_discovery_and_state(
         assert broker.current.subscriptions == ["t2m/Mic1_mute_1/set"]
 
 
+async def test_failed_attributes_publish_does_not_replay_an_older_state(
+    mqtt_conn: MqttConnection, broker: FakeBroker, handler: Handler
+) -> None:
+    async with running(mqtt_conn.run(handler)):
+        await mqtt_conn.wait_connected()
+        assert await mqtt_conn.publish_state("Mute", entry(state=False), SERIAL)
+
+        broker.fail_topic = "t2m/Mic1_mute_1/attributes"
+        published = await mqtt_conn.publish_state("Mute", entry(state=True), SERIAL)
+        assert published is False
+        assert broker.on("t2m/Mic1_mute_1/state") == [False, True]
+        broker.fail_topic = None
+
+        broker.drop()
+        await wait_until(lambda: broker.connects == 2)
+        await mqtt_conn.wait_connected()
+        assert broker.on("t2m/Mic1_mute_1/state") == [False, True, True]
+        assert broker.retained()["t2m/Mic1_mute_1/attributes"]["state"] is True
+
+
 async def test_publish_failure_on_live_client_is_not_fatal(
     mqtt_conn: MqttConnection, broker: FakeBroker, handler: Handler
 ) -> None:

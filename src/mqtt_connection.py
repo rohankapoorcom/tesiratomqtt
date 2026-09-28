@@ -229,6 +229,8 @@ class MqttConnection:
             retain=True,
             qos=self._qos,
         )
+        # Stored once the state is on the broker, even if the attributes publish
+        # below fails: replaying an older entry would overwrite the newer state.
         self._entries[identifier] = (name, data, serial)
         await client.publish(
             topic=topic_attributes, payload=json.dumps(data), retain=True, qos=self._qos

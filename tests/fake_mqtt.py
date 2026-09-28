@@ -29,6 +29,8 @@ class FakeBroker:
         self.clients: list[FakeClient] = []
         self.refuse = False
         self.connects = 0
+        # A publish to ``fail_topic`` raises MqttError.
+        self.fail_topic: str | None = None
         # A publish to ``hold_topic`` sets ``held`` and waits for ``release``.
         self.hold_topic: str | None = None
         self.held = asyncio.Event()
@@ -115,6 +117,9 @@ class FakeClient:
     ) -> None:
         if not self.connected:
             msg = "not connected"
+            raise aiomqtt.MqttError(msg)
+        if topic == self.broker.fail_topic:
+            msg = f"publish to {topic} rejected"
             raise aiomqtt.MqttError(msg)
         if topic == self.broker.hold_topic:
             self.broker.held.set()
