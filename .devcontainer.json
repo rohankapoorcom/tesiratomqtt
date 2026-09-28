@@ -28,5 +28,7 @@
         }
     },
     "remoteUser": "vscode",
-    "features": {}
+    "features": {
+        "ghcr.io/va-h/devcontainers-features/uv:1": {}
+    }
 }

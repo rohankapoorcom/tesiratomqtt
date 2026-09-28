@@ -86,7 +86,7 @@ cp config.yaml.example config.yaml
 # Edit config.yaml with your MQTT broker and Tesira device details
 
 # Run the application
-uv run python -m src
+uv run --no-dev python -m src
 ```
 
 ## ⚙️ Configuration
