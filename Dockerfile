@@ -1,19 +1,22 @@
 # syntax=docker/dockerfile:1
 
-# Docker Hardened Images require `docker login dhi.io` (Docker Hub credentials).
-# The build and runtime stages must use the same Python version so the venv's
-# interpreter symlinks resolve in the runtime image.
-ARG PYTHON_TAG=3.13-alpine
+# The runtime image requires `docker login dhi.io` (Docker Hub credentials).
+# Both stages are built on Docker Hardened Images for the same Python version,
+# so the venv's interpreter symlinks resolve in the runtime image.
+ARG PYTHON_VERSION=3.13
 
 ## -----------------------------------------------------
-## Build stage: the -dev variant has a shell and runs as root.
-FROM dhi.io/python:${PYTHON_TAG}-dev AS build
+## Build stage: Astral's uv image on the hardened Python runtime. It has no
+## shell, so RUN instructions must use exec form.
+FROM ghcr.io/astral-sh/uv:0.12.19-python${PYTHON_VERSION}-dhi AS build
 
-COPY --from=ghcr.io/astral-sh/uv:0.12.19 /uv /bin/uv
+# The image has no passwd entry for root, so use the numeric UID.
+USER 0
 
 # Use the image's Python rather than a uv-managed download, which would not
 # exist in the runtime stage.
 ENV UV_PYTHON_DOWNLOADS=0 \
+    UV_CACHE_DIR=/root/.cache/uv \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_PROJECT_ENVIRONMENT=/app/venv
@@ -23,11 +26,11 @@ WORKDIR /app
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
     --mount=type=bind,source=uv.lock,target=uv.lock \
-    uv sync --locked --no-dev
+    ["uv", "sync", "--locked", "--no-dev"]
 
 ## -----------------------------------------------------
 ## Runtime stage: no shell or package manager, runs as nonroot (UID 65532).
-FROM dhi.io/python:${PYTHON_TAG}
+FROM dhi.io/python:${PYTHON_VERSION}-debian13
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
