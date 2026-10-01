@@ -6,7 +6,7 @@ dependencies = [
     "aiohttp==3.14.3",
     "aiomqtt==2.5.1",
     "pydantic==2.13.5",
-    "python-slugify==9.0.0",
+    "python-slugify==9.1.1",
     "PyYAML==6.0.3",
     "telnetlib3==5.0.1",
 ]
