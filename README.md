@@ -86,7 +86,7 @@ cp config.yaml.example config.yaml
 # Edit config.yaml with your MQTT broker and Tesira device details
 
 # Run the application
-uv run --no-dev python -m src
+uv run --no-dev python src/__init__.py --config config.yaml
 ```
 
 ## ⚙️ Configuration
@@ -163,11 +163,11 @@ Set log level via command line or environment variable:
 
 ```bash
 # Command line
-python -m src --loglevel debug
+python src/__init__.py --config config.yaml --loglevel debug
 
 # Environment variable
 export LOGLEVEL=debug
-python -m src
+python src/__init__.py --config config.yaml
 ```
 
 ## Health checks
@@ -241,7 +241,7 @@ Solution:
 Enable debug logging for detailed troubleshooting:
 
 ```bash
-python -m src --loglevel debug
+python src/__init__.py --config config.yaml --loglevel debug
 ```
 
 This will show:
@@ -281,7 +281,7 @@ The easiest way to get started with development is using VSCode Dev Containers:
    scripts/test
 
    # Run the application
-   python -m src
+   python src/__init__.py --config config.yaml
    ```
 
 #### Option 2: Local Python Setup

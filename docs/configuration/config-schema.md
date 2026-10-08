@@ -350,7 +350,7 @@ export CONFIG=/path/to/config.yaml
 export LOGLEVEL=debug
 
 # Run application
-python -m src
+python src/__init__.py
 ```
 
 ## Configuration Best Practices
