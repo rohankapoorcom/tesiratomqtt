@@ -180,4 +180,4 @@ readinessProbe:
 ---
 
 **Last Updated**: September 2026
-**Architecture Version**: 1.1.42
+**Architecture Version**: 1.1.43
