@@ -710,3 +710,26 @@ async def test_run_resubscribes_on_schedule(
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+
+
+async def test_input_mute_is_a_switch_addressed_by_input_index(
+    connection: BiampTesiraConnection, server: FakeTesiraServer, mqtt: FakeMqtt
+) -> None:
+    server.blocks["Mix"] = Block(mute=True)
+    subscription = Subscription(
+        instance_tag="Mix",
+        attribute="inputMute",
+        index=2,
+        name="Input 2 Mute",
+        device_name="Mixer",
+    )
+    identifier = subscription_identifier("Mix", "inputMute", 2)
+    await connection.open()
+    await connection.subscribe(subscription)
+
+    assert f"Mix subscribe inputMute 2 {identifier}" in server.commands_received
+    assert connection._subscriptions[identifier]["variable_type"] == "bool"
+    await wait_until(lambda: mqtt.states_for(identifier)[-1:] == [True])
+
+    await connection.update_state_and_command(identifier, "false")
+    assert "Mix set inputMute 2 false" in server.commands_received

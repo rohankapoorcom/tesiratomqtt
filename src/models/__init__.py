@@ -59,7 +59,7 @@ class Subscription(BaseModel):
     """A datamodel representing the subscription config in config.yaml."""
 
     instance_tag: str
-    attribute: Literal["mute", "level"]
+    attribute: Literal["mute", "level", "inputMute"]
     index: int
     name: str
     device_name: str

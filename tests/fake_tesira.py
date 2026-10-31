@@ -50,13 +50,14 @@ class Block:
     def get(self, attribute: str) -> Any:
         return {
             "mute": self.mute,
+            "inputMute": self.mute,
             "level": self.level,
             "minLevel": self.min_level,
             "maxLevel": self.max_level,
         }[attribute]
 
     def set(self, attribute: str, raw: str) -> Any:
-        if attribute == "mute":
+        if attribute in ("mute", "inputMute"):
             self.mute = raw.lower() == "true"
             return self.mute
         if attribute == "level":
