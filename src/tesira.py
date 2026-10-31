@@ -557,7 +557,7 @@ class BiampTesiraConnection:
         """Build the state-store entry for a subscription."""
         other_items: dict[str, float] = {}
         match subscription.attribute:
-            case "mute":
+            case "mute" | "inputMute":
                 variable_type = "bool"
             case "level":
                 variable_type = "float"
